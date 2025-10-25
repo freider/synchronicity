@@ -246,3 +246,36 @@ def test_event_loop_execution():
 
         result4 = asyncio.run(test_generator_method_aio())
         print(f"✓ Generator method .aio() runs in synchronizer event loop: {result4}")
+
+
+def test_async_context_manager_generation():
+    """Test that async context managers are generated with sync and async support."""
+    from test.support_files import _class_with_async_ctx
+
+    # Generate wrapper code
+    modules = compile_modules([_class_with_async_ctx.wrapper_module], "s")
+    generated_code = list(modules.values())[0]
+
+    # Execute the generated code to verify context manager behavior
+    with generated_module(generated_code, "async_ctx_generated") as mod:
+        # Sync context manager
+        ctx = mod.AsyncCtx(5)
+        assert hasattr(ctx, "__enter__"), "Sync __enter__ should be generated"
+        assert hasattr(ctx, "__exit__"), "Sync __exit__ should be generated"
+        with ctx as c:
+            assert c.get() == 5
+        # After exit, the underlying impl should have been marked exited
+        assert ctx._impl_instance.exited is True
+
+        # Async context manager
+        async def run_async_ctx():
+            a = mod.AsyncCtx(7)
+            assert hasattr(a, "__aenter__"), "Async __aenter__ should be generated"
+            assert hasattr(a, "__aexit__"), "Async __aexit__ should be generated"
+            async with a as ac:
+                val = await ac.get.aio()
+                return val, a._impl_instance.entered
+
+        val, entered = asyncio.run(run_async_ctx())
+        assert val == 7
+        assert entered is True

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 import types
 from typing import TYPE_CHECKING
 
@@ -651,6 +652,106 @@ def compile_class(
         self._impl_instance.{attr_name} = value"""
         property_definitions.append(property_code)
 
+    # Generate context manager methods if the implementation defines async __aenter__/__aexit__
+    context_manager_methods: list[str] = []
+
+    aenter_method = getattr(cls, "__aenter__", None)
+    if aenter_method is not None and inspect.iscoroutinefunction(aenter_method):
+        # Resolve annotations and return transformer for __aenter__
+        aenter_annotations = inspect.get_annotations(aenter_method, eval_str=True)
+        aenter_sig = inspect.signature(aenter_method)
+        aenter_return_annotation = aenter_annotations.get("return", aenter_sig.return_annotation)
+        aenter_return_transformer = create_transformer(aenter_return_annotation, synchronized_types)
+
+        # Format return types for sync (__enter__) and async (__aenter__)
+        aenter_sync_return_str, aenter_async_return_str = _format_return_annotation(
+            aenter_return_transformer, synchronized_types, synchronizer_name, current_target_module
+        )
+
+        # Build bodies
+        aenter_sync_impl_ref = f"        impl_method = {origin_module}.{cls.__name__}.__aenter__"
+        aenter_sync_body = _build_call_with_wrap(
+            "self._synchronizer._run_function_sync(impl_method(self._impl_instance))",
+            aenter_return_transformer,
+            synchronized_types,
+            synchronizer_name,
+            current_target_module,
+            indent="        ",
+        )
+
+        aenter_aio_impl_ref = f"        impl_method = {origin_module}.{cls.__name__}.__aenter__"
+        aenter_aio_body = _build_call_with_wrap(
+            "await self._synchronizer._run_function_async(impl_method(self._impl_instance))",
+            aenter_return_transformer,
+            synchronized_types,
+            synchronizer_name,
+            current_target_module,
+            indent="        ",
+        )
+
+        context_manager_methods.append(
+            f"""    def __enter__(self){aenter_sync_return_str}:{os.linesep}{aenter_sync_impl_ref}{os.linesep}{aenter_sync_body}\n\n    async def __aenter__(self){aenter_async_return_str}:{os.linesep}{aenter_aio_impl_ref}{os.linesep}{aenter_aio_body}"""
+        )
+
+    aexit_method = getattr(cls, "__aexit__", None)
+    if aexit_method is not None and inspect.iscoroutinefunction(aexit_method):
+        # Resolve annotations and parameters for __aexit__
+        aexit_annotations = inspect.get_annotations(aexit_method, eval_str=True)
+        aexit_sig = inspect.signature(aexit_method)
+        aexit_return_annotation = aexit_annotations.get("return", aexit_sig.return_annotation)
+        aexit_return_transformer = create_transformer(aexit_return_annotation, synchronized_types)
+
+        # Parse parameters (skip self)
+        aexit_param_str, aexit_call_args_str, aexit_unwrap_code = _parse_parameters_with_transformers(
+            aexit_sig,
+            aexit_annotations,
+            synchronized_types,
+            synchronizer_name,
+            current_target_module,
+            skip_self=True,
+            unwrap_indent="        ",
+        )
+
+        # Format return types for sync (__exit__) and async (__aexit__)
+        aexit_sync_return_str, aexit_async_return_str = _format_return_annotation(
+            aexit_return_transformer, synchronized_types, synchronizer_name, current_target_module
+        )
+
+        # Build bodies
+        aexit_sync_impl_ref = f"        impl_method = {origin_module}.{cls.__name__}.__aexit__"
+        aexit_sync_unwrap = f"\n{aexit_sync_impl_ref}"
+        if aexit_unwrap_code:
+            aexit_sync_unwrap += f"\n{aexit_unwrap_code}"
+
+        aexit_sync_body = _build_call_with_wrap(
+            f"self._synchronizer._run_function_sync(impl_method(self._impl_instance, {aexit_call_args_str}))",
+            aexit_return_transformer,
+            synchronized_types,
+            synchronizer_name,
+            current_target_module,
+            indent="        ",
+        )
+
+        aexit_aio_impl_ref = f"        impl_method = {origin_module}.{cls.__name__}.__aexit__"
+        aexit_aio_unwrap = f"\n{aexit_aio_impl_ref}"
+        if aexit_unwrap_code:
+            aexit_aio_unwrap += f"\n{aexit_unwrap_code}"
+
+        aexit_aio_body = _build_call_with_wrap(
+            f"await self._synchronizer._run_function_async(impl_method(self._impl_instance, {aexit_call_args_str}))",
+            aexit_return_transformer,
+            synchronized_types,
+            synchronizer_name,
+            current_target_module,
+            indent="        ",
+        )
+
+        context_manager_methods.append(
+            f"""    def __exit__(self, {aexit_param_str}){aexit_sync_return_str}:{aexit_sync_unwrap}\n{aexit_sync_body}\n\n    async def __aexit__(self, {aexit_param_str}){aexit_async_return_str}:{aexit_aio_unwrap}\n{aexit_aio_body}"""
+        )
+
+    context_manager_section = "\n\n".join(context_manager_methods) if context_manager_methods else ""
+
     # Generate the wrapper class
     properties_section = "\n\n".join(property_definitions) if property_definitions else ""
     methods_section = "\n\n".join(method_definitions) if method_definitions else ""
@@ -683,8 +784,12 @@ def compile_class(
 
     def __init__(self, {init_signature}):
         self._impl_instance = {origin_module}.{cls.__name__}({init_call})
+        # Seed cache for identity preservation when wrapping the same impl later
+        self._instance_cache[id(self._impl_instance)] = self
 
 {from_impl_method}
+
+{context_manager_section}
 
 {properties_section}
 
