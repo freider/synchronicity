@@ -346,7 +346,7 @@ def compile_function(
             aio_unwrap += "\n" + "\n".join([line.replace("    ", "        ", 1) for line in unwrap_code.split("\n")])
 
         # Build __call__ and aio bodies to return the CM wrapper
-        if inspect.iscoroutinefunction(f) or is_async_gen:
+        if inspect.iscoroutinefunction(f):
             sync_body = (
                 f"impl_cm = get_synchronizer('{synchronizer_name}')._run_function_sync(impl_function({call_args_str}))\n"
                 f"return {cm_wrapper_name}(impl_cm)"

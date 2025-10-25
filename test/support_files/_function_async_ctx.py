@@ -23,7 +23,7 @@ async def make_ctx_annotated(x: int) -> typing.AsyncContextManager[int]:
 
 @wrapper_module.wrap_function
 @contextlib.asynccontextmanager
-async def make_ctx_decorated(x: int):
+async def make_ctx_decorated(x: int) -> typing.AsyncGenerator[int, None]:
     await asyncio.sleep(0.001)
     try:
         yield x
