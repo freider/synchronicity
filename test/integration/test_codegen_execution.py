@@ -279,3 +279,40 @@ def test_async_context_manager_generation():
         val, entered = asyncio.run(run_async_ctx())
         assert val == 7
         assert entered is True
+
+
+def test_async_context_manager_function_annotations():
+    """Test functions returning AsyncContextManager and asynccontextmanager-decorated functions."""
+    from test.support_files import _function_async_ctx
+
+    modules = compile_modules([_function_async_ctx.wrapper_module], "s")
+    generated_code = list(modules.values())[0]
+
+    with generated_module(generated_code, "function_async_ctx_generated") as mod:
+        # Annotated AsyncContextManager
+        cm1 = mod.make_ctx_annotated(10)
+        # Sync usage
+        with cm1 as v1:
+            assert v1 == 10
+
+        # Async usage
+        async def run_cm1():
+            async with cm1 as v2:
+                return v2
+
+        v2 = asyncio.run(run_cm1())
+        assert v2 == 10
+
+        # Decorated with @asynccontextmanager
+        cm2 = mod.make_ctx_decorated(13)
+        with cm2 as y1:
+            assert y1 == 13
+
+        async def run_cm2():
+            # New instance; _AsyncGeneratorContextManager is single-use
+            cm2b = mod.make_ctx_decorated(13)
+            async with cm2b as y2:
+                return y2
+
+        y2 = asyncio.run(run_cm2())
+        assert y2 == 13

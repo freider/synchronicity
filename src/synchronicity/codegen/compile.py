@@ -9,7 +9,11 @@ from typing import TYPE_CHECKING
 
 from synchronicity.module import Module
 
-from .signature_utils import is_async_generator
+from .signature_utils import (
+    is_async_generator,
+    is_async_contextmanager,
+    async_cm_enter_annotation,
+)
 from .type_transformer import GeneratorTransformer, create_transformer
 
 if TYPE_CHECKING:
@@ -252,8 +256,132 @@ def compile_function(
     # Check if it's an async generator
     is_async_gen = is_async_generator(f, return_annotation)
 
+    # Check if it's an async context manager factory
+    is_async_cm = is_async_contextmanager(f, return_annotation)
+
     # Check if it's an async function
     is_async_func = inspect.iscoroutinefunction(f) or is_async_gen
+
+    # Special handling for functions returning async context managers
+    if is_async_cm:
+        # Determine the enter value type and transformer
+        enter_annotation = async_cm_enter_annotation(f, return_annotation)
+        enter_transformer = create_transformer(enter_annotation, synchronized_types)
+
+        # Parse parameters using transformers
+        param_str, call_args_str, unwrap_code = _parse_parameters_with_transformers(
+            sig,
+            annotations,
+            synchronized_types,
+            synchronizer_name,
+            current_target_module,
+            skip_self=False,
+            unwrap_indent="    ",
+        )
+
+        # Build type annotation strings for return types
+        enter_wrapped_type = enter_transformer.wrapped_type(
+            synchronized_types, current_target_module
+        )
+        # Always use typing.ContextManager[...] and typing.AsyncContextManager[...] in annotation strings
+        # Quote when translation is needed to avoid forward ref issues
+        if enter_transformer.needs_translation():
+            sync_return_str = f' -> "typing.ContextManager[{enter_wrapped_type}]"'
+            async_return_str = f' -> "typing.AsyncContextManager[{enter_wrapped_type}]"'
+        else:
+            sync_return_str = f" -> typing.ContextManager[{enter_wrapped_type}]"
+            async_return_str = f" -> typing.AsyncContextManager[{enter_wrapped_type}]"
+
+        # Create a context manager wrapper class for this function
+        cm_wrapper_name = f"_{f.__name__}_cm"
+        # Build __enter__ body with wrapping
+        cm_enter_body = _build_call_with_wrap(
+            "get_synchronizer('%s')._run_function_sync(self._impl_cm.__aenter__())" % synchronizer_name,
+            enter_transformer,
+            synchronized_types,
+            synchronizer_name,
+            current_target_module,
+            indent="        ",
+        )
+        cm_aenter_body = _build_call_with_wrap(
+            "await get_synchronizer('%s')._run_function_async(self._impl_cm.__aenter__())" % synchronizer_name,
+            enter_transformer,
+            synchronized_types,
+            synchronizer_name,
+            current_target_module,
+            indent="        ",
+        )
+
+        # Build return annotation strings for __enter__/__aenter__
+        enter_type_str = enter_transformer.wrapped_type(synchronized_types, current_target_module)
+        enter_should_quote = enter_transformer.needs_translation()
+        enter_sync_ann = f'"{enter_type_str}"' if enter_should_quote else enter_type_str
+        enter_async_ann = enter_sync_ann
+
+        cm_wrapper_code = f"""class {cm_wrapper_name}:
+    def __init__(self, impl_cm):
+        self._impl_cm = impl_cm
+
+    def __enter__(self) -> {enter_sync_ann}:
+{cm_enter_body}
+
+    async def __aenter__(self) -> {enter_async_ann}:
+{cm_aenter_body}
+
+    def __exit__(self, exc_type, exc, tb):
+        return get_synchronizer('%s')._run_function_sync(self._impl_cm.__aexit__(exc_type, exc, tb))
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return await get_synchronizer('%s')._run_function_async(self._impl_cm.__aexit__(exc_type, exc, tb))
+""" % (synchronizer_name, synchronizer_name)
+
+        # Build unwrap sections
+        call_impl_ref = f"        impl_function = {origin_module}.{f.__name__}"
+        aio_impl_ref = f"        impl_function = {origin_module}.{f.__name__}"
+
+        call_unwrap = f"\n{call_impl_ref}"
+        aio_unwrap = f"\n{aio_impl_ref}"
+        if unwrap_code:
+            call_unwrap += "\n" + "\n".join([line for line in unwrap_code.split("\n")])
+            aio_unwrap += "\n" + "\n".join([line.replace("    ", "        ", 1) for line in unwrap_code.split("\n")])
+
+        # Build __call__ and aio bodies to return the CM wrapper
+        if inspect.iscoroutinefunction(f) or is_async_gen:
+            sync_body = (
+                f"impl_cm = get_synchronizer('{synchronizer_name}')._run_function_sync(impl_function({call_args_str}))\n"
+                f"return {cm_wrapper_name}(impl_cm)"
+            )
+            aio_body = (
+                f"impl_cm = await get_synchronizer('{synchronizer_name}')._run_function_async(impl_function({call_args_str}))\n"
+                f"return {cm_wrapper_name}(impl_cm)"
+            )
+        else:
+            sync_body = f"impl_cm = impl_function({call_args_str})\nreturn {cm_wrapper_name}(impl_cm)"
+            aio_body = f"impl_cm = impl_function({call_args_str})\nreturn {cm_wrapper_name}(impl_cm)"
+
+        sync_body_indented = "\n".join("        " + line if line.strip() else line for line in sync_body.split("\n"))
+        aio_body_indented = "\n".join("        " + line if line.strip() else line for line in aio_body.split("\n"))
+
+        wrapper_class_name = f"_{f.__name__}"
+        wrapper_class_code = f"""{cm_wrapper_code}
+class {wrapper_class_name}:
+    def __call__(self, {param_str}){sync_return_str}:{call_unwrap}
+{sync_body_indented}
+
+    async def aio(self, {param_str}){async_return_str}:{aio_unwrap}
+{aio_body_indented}
+"""
+
+        # Create instance and dummy function
+        wrapper_instance_name = f"_{f.__name__}_instance"
+        instance_creation = f"{wrapper_instance_name} = {wrapper_class_name}()"
+        dummy_function_code = f"""@replace_with({wrapper_instance_name})
+def {f.__name__}({param_str}){sync_return_str}:
+    # Dummy function for type checkers and IDE navigation
+    # Actual implementation is in {wrapper_class_name}.__call__
+    return {wrapper_instance_name}({", ".join(sig.parameters.keys())})"""
+
+        return f"{wrapper_class_code}\n{instance_creation}\n\n{dummy_function_code}"
 
     # For non-async functions, generate simple wrapper without @wrapped_function decorator
     if not is_async_func:
