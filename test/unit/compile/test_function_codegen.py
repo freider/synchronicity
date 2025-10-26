@@ -304,20 +304,20 @@ class TestAsyncGenerators:
 
         # The key assertion: the entire return type should be quoted as a string
         # for both sync and async versions when it contains wrapper types
-        assert (
-            ' -> "typing.Generator[Person, None, None]"' in generated_code
-        ), "Sync version should quote entire Generator type when it contains wrapped types"
-        assert (
-            ' -> "typing.AsyncGenerator[Person]"' in generated_code
-        ), "Async version should quote entire AsyncGenerator type when it contains wrapped types"
+        assert ' -> "typing.Generator[Person, None, None]"' in generated_code, (
+            "Sync version should quote entire Generator type when it contains wrapped types"
+        )
+        assert ' -> "typing.AsyncGenerator[Person]"' in generated_code, (
+            "Async version should quote entire AsyncGenerator type when it contains wrapped types"
+        )
 
         # Should NOT have individually quoted type arguments inside the generic
-        assert (
-            'Generator["Person"' not in generated_code
-        ), "Should not quote individual type arguments within the generic"
-        assert (
-            'AsyncGenerator["Person"' not in generated_code
-        ), "Should not quote individual type arguments within the generic"
+        assert 'Generator["Person"' not in generated_code, (
+            "Should not quote individual type arguments within the generic"
+        )
+        assert 'AsyncGenerator["Person"' not in generated_code, (
+            "Should not quote individual type arguments within the generic"
+        )
 
     def test_compile_async_generator_with_nested_wrapped_type_quoting(self, test_synchronizer):
         """Test that async generators with nested wrapped types (e.g., list[Person]) quote the entire return type."""
@@ -349,12 +349,12 @@ class TestAsyncGenerators:
         compile(generated_code, "<string>", "exec")
 
         # The entire return type should be quoted because it contains wrapped types
-        assert (
-            ' -> "typing.Generator[list[Person], None, None]"' in generated_code
-        ), "Sync version should quote entire Generator type when yield type contains wrapped types"
-        assert (
-            ' -> "typing.AsyncGenerator[list[Person]]"' in generated_code
-        ), "Async version should quote entire AsyncGenerator type when yield type contains wrapped types"
+        assert ' -> "typing.Generator[list[Person], None, None]"' in generated_code, (
+            "Sync version should quote entire Generator type when yield type contains wrapped types"
+        )
+        assert ' -> "typing.AsyncGenerator[list[Person]]"' in generated_code, (
+            "Async version should quote entire AsyncGenerator type when yield type contains wrapped types"
+        )
 
 
 class TestSyncFunctions:
