@@ -21,8 +21,7 @@ def test_multifile_generation(monkeypatch, support_files_path):
 
     # Set up environment for subprocess with support_files on PYTHONPATH
     project_root = Path(__file__).parent.parent.parent
-    # Ensure env contains only strings (no Path objects)
-    env = {str(k): str(v) for k, v in os.environ.items()}
+    env = os.environ.copy()
     pythonpath_parts = [str(support_files_path), str(project_root)]
     if "PYTHONPATH" in env:
         pythonpath_parts.append(env["PYTHONPATH"])
@@ -72,8 +71,7 @@ def test_multifile_execution(support_files_path):
         tmppath = Path(tmpdir)
 
         # Set up environment with support_files on PYTHONPATH
-        # Ensure env contains only strings (no Path objects)
-        env = {str(k): str(v) for k, v in os.environ.items()}
+        env = os.environ.copy()
         project_root = Path(__file__).parent.parent.parent
         pythonpath_parts = [str(support_files_path), str(project_root)]
         if "PYTHONPATH" in env:
@@ -169,8 +167,7 @@ print("SUCCESS")
         )
 
         # Run the test script with PYTHONPATH set to include tmpdir and project root
-        # Ensure env contains only strings (no Path objects)
-        env = {str(k): str(v) for k, v in os.environ.items()}
+        env = os.environ.copy()
         pythonpath_parts = [str(tmppath), str(project_root)]
         if "PYTHONPATH" in env:
             pythonpath_parts.append(env["PYTHONPATH"])
@@ -239,8 +236,7 @@ def test_multifile_type_checking(support_files_path):
         tmppath = Path(tmpdir)
 
         # Set up environment with support_files on PYTHONPATH
-        # Ensure env contains only strings (no Path objects)
-        env = {str(k): str(v) for k, v in os.environ.items()}
+        env = os.environ.copy()
         project_root = Path(__file__).parent.parent.parent
         pythonpath_parts = [str(support_files_path), str(project_root)]
         if "PYTHONPATH" in env:
