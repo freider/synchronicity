@@ -17,9 +17,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --only-group=lint
       - name: Check lint with Ruff
-        run: uv run --only-group=lint ruff check .
+        run: uv run --only-group=lint ruff check src test
       - name: Check formatting with Ruff
-        run: uv run --only-group=lint ruff format --diff .
+        run: uv run --only-group=lint ruff format --diff src test
 
   mypy:
     name: MyPy
@@ -36,4 +36,4 @@ jobs:
       - name: Install dependencies
         run: uv sync --only-group=lint
       - name: Run
-        run: uv run --only-group=lint mypy src/synchronicity
+        run: uv run --only-group=lint mypy src test
