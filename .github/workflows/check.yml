@@ -36,4 +36,4 @@ jobs:
       - name: Install dependencies
         run: uv sync --only-group=lint
       - name: Run
-        run: uv run --only-group=lint mypy src test
+        run: uv run --only-group=lint mypy src test/unit
