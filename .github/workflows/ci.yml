@@ -29,6 +29,6 @@ jobs:
       - name: Install dependencies
         run: uv sync --group=dev
       - name: Run tests with pytest
-        run: uv run --group=dev pytest -s
+        run: uv run --group=dev pytest test/
       - name: Run README tests
         run: uv run --group=dev pytest --markdown-docs README.md
