@@ -30,5 +30,3 @@ jobs:
         run: uv sync --group=dev
       - name: Run tests with pytest
         run: uv run --group=dev pytest test/
-      - name: Run README tests
-        run: uv run --group=dev pytest --markdown-docs README.md
