@@ -33,11 +33,13 @@ def check_pyright(module_paths: list[Path], extra_pythonpath: str = None) -> str
         else:
             pythonpath = extra_pythonpath
 
+    # Ensure env contains only strings (no Path objects)
+    safe_env = {str(k): str(v) for k, v in os.environ.items()}
     result = subprocess.run(
         ["pyright"] + [str(p) for p in module_paths],
         capture_output=True,
         text=True,
-        env={**os.environ, "PYTHONPATH": pythonpath},
+        env={**safe_env, "PYTHONPATH": pythonpath},
     )
 
     if result.returncode != 0:
