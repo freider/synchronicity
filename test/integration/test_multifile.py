@@ -25,7 +25,7 @@ def test_multifile_generation(monkeypatch, support_files_path):
     pythonpath_parts = [str(support_files_path), str(project_root)]
     if "PYTHONPATH" in env:
         pythonpath_parts.append(env["PYTHONPATH"])
-    env["PYTHONPATH"] = ":".join(pythonpath_parts)
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
 
     # Generate code using the CLI with --stdout
     result = subprocess.run(
@@ -76,7 +76,7 @@ def test_multifile_execution(support_files_path):
         pythonpath_parts = [str(support_files_path), str(project_root)]
         if "PYTHONPATH" in env:
             pythonpath_parts.append(env["PYTHONPATH"])
-        env["PYTHONPATH"] = ":".join(pythonpath_parts)
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
 
         # Generate code using the CLI to write files
         result = subprocess.run(
@@ -108,11 +108,16 @@ def test_multifile_execution(support_files_path):
 
         # Verify generated modules are type-correct by running pyright
         # Check module_a
+        env_pyright = os.environ.copy()
+        env_pyright["PYTHONPATH"] = os.pathsep.join(
+            [str(tmppath)] + ([env.get("PYTHONPATH")] if env.get("PYTHONPATH") else [])
+        )
         result_a = subprocess.run(
             ["pyright", str(module_a)],
             capture_output=True,
             text=True,
             cwd=str(tmppath),
+            env=env_pyright,
         )
         if result_a.returncode != 0:
             print(f"  ✗ Generated module a.py has type errors:\n{result_a.stdout}")
@@ -125,6 +130,7 @@ def test_multifile_execution(support_files_path):
             capture_output=True,
             text=True,
             cwd=str(tmppath),
+            env=env_pyright,
         )
         if result_b.returncode != 0:
             print(f"  ✗ Generated module b.py has type errors:\n{result_b.stdout}")
@@ -171,7 +177,7 @@ print("SUCCESS")
         pythonpath_parts = [str(tmppath), str(project_root)]
         if "PYTHONPATH" in env:
             pythonpath_parts.append(env["PYTHONPATH"])
-        env["PYTHONPATH"] = ":".join(pythonpath_parts)
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
 
         result = subprocess.run(
             [sys.executable, str(test_script)],
@@ -241,7 +247,7 @@ def test_multifile_type_checking(support_files_path):
         pythonpath_parts = [str(support_files_path), str(project_root)]
         if "PYTHONPATH" in env:
             pythonpath_parts.append(env["PYTHONPATH"])
-        env["PYTHONPATH"] = ":".join(pythonpath_parts)
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
 
         # Generate code using the CLI to write files
         result = subprocess.run(
@@ -344,6 +350,7 @@ async def test():
             capture_output=True,
             text=True,
             cwd=str(tmppath),
+            env=env_pyright,
         )
 
         print(f"Pyright output (sync):\n{result_sync.stdout}")
@@ -363,6 +370,7 @@ async def test():
             capture_output=True,
             text=True,
             cwd=str(tmppath),
+            env=env_pyright,
         )
 
         print(f"Pyright output (async):\n{result_async.stdout}")

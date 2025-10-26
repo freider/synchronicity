@@ -29,7 +29,7 @@ def check_pyright(module_paths: list[Path], extra_pythonpath: str = None) -> str
     pythonpath = os.environ.get("PYTHONPATH", "")
     if extra_pythonpath:
         if pythonpath:
-            pythonpath += f":{extra_pythonpath}"
+            pythonpath += f"{os.pathsep}{extra_pythonpath}"
         else:
             pythonpath = extra_pythonpath
 
