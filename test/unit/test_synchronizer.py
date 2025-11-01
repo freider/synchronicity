@@ -23,21 +23,33 @@ class TestSynchronizerEventLoop:
         sync1 = Synchronizer("sync1")
         sync2 = Synchronizer("sync2")
 
+        loop_info = {}
+
+        async def get_loop_info(sync_name):
+            """Return loop and thread info from within the event loop."""
+            loop = asyncio.get_running_loop()
+            thread_id = threading.current_thread().ident
+            return {
+                "loop_id": id(loop),
+                "thread_id": thread_id,
+                "sync_name": sync_name,
+            }
+
         try:
-            # Start both loops
-            loop1 = sync1._get_loop(start=True)
-            loop2 = sync2._get_loop(start=True)
+            # Trigger loop creation by running functions
+            info1 = sync1._run_function_sync(get_loop_info("sync1"))
+            info2 = sync2._run_function_sync(get_loop_info("sync2"))
 
             # Verify they are different loops
-            assert loop1 is not None
-            assert loop2 is not None
-            assert loop1 is not loop2
+            assert info1["loop_id"] != info2["loop_id"]
 
             # Verify they are on different threads
-            assert sync1._thread is not None
-            assert sync2._thread is not None
-            assert sync1._thread is not sync2._thread
-            assert sync1._thread.ident != sync2._thread.ident
+            assert info1["thread_id"] != info2["thread_id"]
+
+            # Verify these are not the main thread
+            main_thread_id = threading.current_thread().ident
+            assert info1["thread_id"] != main_thread_id
+            assert info2["thread_id"] != main_thread_id
         finally:
             sync1._close_loop()
             sync2._close_loop()
@@ -49,24 +61,15 @@ class TestSynchronizerEventLoop:
 
         thread_ids = {}
 
-        def capture_thread_id(sync, name):
-            loop = sync._get_loop(start=True)
-            # Schedule a task that captures the thread ID
-            def capture():
-                thread_ids[name] = threading.current_thread().ident
-                return True
-
-            async def coro():
-                thread_ids[name] = threading.current_thread().ident
-                return True
-
-            result = sync._run_function_sync(coro())
-            assert result is True
+        async def capture_thread_id(sync_name):
+            """Capture thread ID from within the event loop."""
+            thread_ids[sync_name] = threading.current_thread().ident
+            return True
 
         try:
-            # Capture thread IDs from within each loop
-            capture_thread_id(sync1, "sync1")
-            capture_thread_id(sync2, "sync2")
+            # Capture thread IDs by running functions in each loop
+            sync1._run_function_sync(capture_thread_id("sync1"))
+            sync2._run_function_sync(capture_thread_id("sync2"))
 
             # Verify different thread IDs
             assert "sync1" in thread_ids
@@ -95,11 +98,7 @@ class TestSynchronizerEventLoop:
             return value
 
         try:
-            # Run operations on both loops concurrently
-            loop1 = sync1._get_loop(start=True)
-            loop2 = sync2._get_loop(start=True)
-
-            # Schedule tasks on both loops
+            # Run operations on both loops
             result1 = sync1._run_function_sync(set_value("sync1", 42))
             result2 = sync2._run_function_sync(set_value("sync2", 100))
 
@@ -108,8 +107,10 @@ class TestSynchronizerEventLoop:
             assert results.get("sync1") == 42
             assert results.get("sync2") == 100
 
-            # Verify loops are still separate
-            assert sync1._loop is not sync2._loop
+            # Verify independence by checking results are isolated
+            assert len(results) == 2
+            assert "sync1" in results
+            assert "sync2" in results
         finally:
             sync1._close_loop()
             sync2._close_loop()
@@ -133,8 +134,8 @@ class TestSynchronizerCrossThread:
             results["thread_result"] = result
 
         try:
-            # Start the loop from main thread
-            sync._get_loop(start=True)
+            # Trigger loop creation from main thread first
+            sync._run_function_sync(async_func(0))
 
             # Call from a different thread
             thread = threading.Thread(target=thread_func)
@@ -166,8 +167,8 @@ class TestSynchronizerCrossThread:
             asyncio.run(caller_func())
 
         try:
-            # Start the synchronizer's loop
-            sync._get_loop(start=True)
+            # Trigger loop creation from main thread first
+            sync._run_function_sync(async_func(0))
 
             # Run async caller from a different thread
             thread = threading.Thread(target=thread_func)
@@ -193,7 +194,8 @@ class TestSynchronizerCrossThread:
             results[f"thread_{thread_id}"] = result
 
         try:
-            sync._get_loop(start=True)
+            # Trigger loop creation first
+            sync._run_function_sync(async_func(-1, 0))
 
             # Start multiple threads
             threads = []
@@ -231,7 +233,8 @@ class TestSynchronizerCrossThread:
                 results.append(result)
 
         try:
-            sync._get_loop(start=True)
+            # Trigger loop creation first
+            sync._run_function_sync(async_func(-1))
 
             # Start many concurrent threads
             threads = []
@@ -261,18 +264,16 @@ class TestSynchronizerMultipleInstances:
         sync3 = Synchronizer("sync3")
 
         results = {}
+        loop_ids = {}
 
         async def async_func(sync_name, value):
             await asyncio.sleep(0.01)
+            loop_id = id(asyncio.get_running_loop())
+            loop_ids[sync_name] = loop_id
             return f"{sync_name}:{value}"
 
         try:
-            # Start all loops
-            sync1._get_loop(start=True)
-            sync2._get_loop(start=True)
-            sync3._get_loop(start=True)
-
-            # Run operations on all three synchronizers
+            # Run operations on all three synchronizers (triggers loop creation)
             result1 = sync1._run_function_sync(async_func("sync1", 1))
             result2 = sync2._run_function_sync(async_func("sync2", 2))
             result3 = sync3._run_function_sync(async_func("sync3", 3))
@@ -286,9 +287,9 @@ class TestSynchronizerMultipleInstances:
             assert results["sync3"] == "sync3:3"
 
             # Verify all loops are different
-            assert sync1._loop is not sync2._loop
-            assert sync1._loop is not sync3._loop
-            assert sync2._loop is not sync3._loop
+            assert loop_ids["sync1"] != loop_ids["sync2"]
+            assert loop_ids["sync1"] != loop_ids["sync3"]
+            assert loop_ids["sync2"] != loop_ids["sync3"]
         finally:
             sync1._close_loop()
             sync2._close_loop()
@@ -310,9 +311,9 @@ class TestSynchronizerMultipleInstances:
             results[sync_name] = result
 
         try:
-            # Start both loops
-            sync1._get_loop(start=True)
-            sync2._get_loop(start=True)
+            # Trigger loop creation for both synchronizers
+            sync1._run_function_sync(async_func(0))
+            sync2._run_function_sync(async_func(0))
 
             # Use each synchronizer from different threads
             thread1 = threading.Thread(target=thread_func, args=(sync1, "sync1", 100))
@@ -338,43 +339,38 @@ class TestSynchronizerLoopLifecycle:
         """Test starting and stopping a synchronizer loop."""
         sync = Synchronizer("test_sync")
 
-        # Initially no loop
-        assert sync._get_loop() is None
+        async def dummy_func():
+            return 42
 
-        # Start loop
-        loop = sync._get_loop(start=True)
-        assert loop is not None
-        assert not loop.is_closed()
-
-        # Verify loop is still running
-        assert sync._thread is not None
-        assert sync._thread.is_alive()
+        # Initially, running a function should create the loop
+        result = sync._run_function_sync(dummy_func())
+        assert result == 42
 
         # Stop loop
         sync._close_loop()
 
-        # Verify loop is closed
-        # Note: the loop may be None after close
-        assert sync._thread is None or not sync._thread.is_alive()
+        # Verify loop can be recreated and still works
+        result2 = sync._run_function_sync(dummy_func())
+        assert result2 == 42
+
+        sync._close_loop()
 
     def test_is_inside_loop_detection(self):
         """Test _is_inside_loop correctly detects when inside the loop."""
         sync = Synchronizer("test_sync")
 
         try:
-            loop = sync._get_loop(start=True)
-
             # From outside the loop, should return False
             assert not sync._is_inside_loop()
 
-            # Verify from within the loop it would return True
+            # Verify from within the loop it returns True
             async def check_inside():
                 # This should return True when called from within the loop
                 return sync._is_inside_loop()
 
-            # But we can't easily test this directly since _run_function_sync
-            # runs from outside. However, we can verify the loop exists
-            assert loop is not None
+            # Run the check from within the loop
+            is_inside = sync._run_function_sync(check_inside())
+            assert is_inside is True
         finally:
             sync._close_loop()
 
@@ -382,14 +378,19 @@ class TestSynchronizerLoopLifecycle:
         """Test that loop can be recreated after closing."""
         sync = Synchronizer("test_sync")
 
+        loop_ids = []
+
         async def async_func():
+            loop_id = id(asyncio.get_running_loop())
+            loop_ids.append(loop_id)
             return 42
 
         try:
             # First loop
-            loop1 = sync._get_loop(start=True)
             result1 = sync._run_function_sync(async_func())
             assert result1 == 42
+            assert len(loop_ids) == 1
+            first_loop_id = loop_ids[0]
 
             # Close
             sync._close_loop()
@@ -398,11 +399,14 @@ class TestSynchronizerLoopLifecycle:
             time.sleep(0.1)
 
             # Second loop (should be new)
-            loop2 = sync._get_loop(start=True)
             result2 = sync._run_function_sync(async_func())
             assert result2 == 42
+            assert len(loop_ids) == 2
+            second_loop_id = loop_ids[1]
 
-            # May or may not be the same loop object, but should work
-            assert loop2 is not None
+            # The loop IDs may be the same or different (Python may reuse IDs)
+            # but the important thing is that it works
+            assert first_loop_id is not None
+            assert second_loop_id is not None
         finally:
             sync._close_loop()
