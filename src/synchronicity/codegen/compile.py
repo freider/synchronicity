@@ -21,96 +21,13 @@ import typing
 
 from synchronicity.module import Module
 
+from .annotation_analysis import (
+    _extract_typevars_from_function,
+    _get_cross_module_imports,
+    _safe_get_annotations,
+)
 from .compile_class import compile_class
 from .compile_function import compile_function
-from .compile_utils import _extract_typevars_from_function, _safe_get_annotations
-
-
-def _check_annotation_for_cross_refs(
-    annotation,
-    current_module: str,
-    synchronized_types: dict[type, tuple[str, str]],
-    cross_module_refs: dict,
-) -> None:
-    """Check a type annotation for references to wrapped classes from other modules."""
-    # Handle direct class references
-    if isinstance(annotation, type) and annotation in synchronized_types:
-        target_module, wrapper_name = synchronized_types[annotation]
-        if target_module != current_module:
-            if target_module not in cross_module_refs:
-                cross_module_refs[target_module] = set()
-            cross_module_refs[target_module].add(wrapper_name)
-
-    # Handle generic types
-    import typing
-
-    args = typing.get_args(annotation)
-    if args:
-        for arg in args:
-            _check_annotation_for_cross_refs(arg, current_module, synchronized_types, cross_module_refs)
-
-
-def _get_cross_module_imports(
-    module_name: str,
-    module_items: dict,
-    synchronized_types: dict[type, tuple[str, str]],
-) -> dict[str, set[str]]:
-    """
-    Detect which wrapped classes from other modules are referenced in this module.
-
-    Args:
-        module_name: The current module being compiled
-        module_items: Items in the current module
-        synchronizer: The Synchronizer instance
-
-    Returns:
-        Dict mapping target module names to sets of wrapper class names
-    """
-    cross_module_refs = {}  # target_module -> set of class names
-
-    # Check each item in this module for references to wrapped classes from other modules
-    for obj in module_items.keys():
-        # Get signature if it's a function or class with methods
-        if isinstance(obj, types.FunctionType):
-            annotations = _safe_get_annotations(obj)
-            for annotation in annotations.values():
-                _check_annotation_for_cross_refs(annotation, module_name, synchronized_types, cross_module_refs)
-        elif isinstance(obj, type):
-            # Check methods of the class
-            for method_name, method in inspect.getmembers(obj, predicate=inspect.isfunction):
-                if method_name.startswith("_"):
-                    continue
-                annotations = _safe_get_annotations(method)
-                for annotation in annotations.values():
-                    _check_annotation_for_cross_refs(annotation, module_name, synchronized_types, cross_module_refs)
-
-    return cross_module_refs
-
-
-def _contains_self_type(annotation) -> bool:
-    """Check if a type annotation contains typing.Self.
-
-    Args:
-        annotation: Type annotation to check
-
-    Returns:
-        True if typing.Self is found anywhere in the annotation
-    """
-    # Check for typing.Self directly
-    if annotation is typing.Self:
-        return True
-
-    # Check for generic types with typing.Self as an argument
-    origin = typing.get_origin(annotation)
-    if origin is not None:
-        args = typing.get_args(annotation)
-        for arg in args:
-            if _contains_self_type(arg):
-                return True
-
-    return False
-
-
 def _translate_typevar_bound(
     bound: type | str, synchronized_types: dict[type, tuple[str, str]], target_module: str
 ) -> str:

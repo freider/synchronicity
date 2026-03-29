@@ -334,6 +334,26 @@ def test_compile_module_multiple_classes_separation(simple_class, complex_class)
         assert lines[prev_line_idx].strip() == ""
 
 
+def test_compile_module_adds_cross_module_imports():
+    """Test that module compilation imports referenced wrapped classes from other modules."""
+    from synchronicity.module import Module
+
+    class External:
+        pass
+
+    async def use_external(item: External) -> External:
+        return item
+
+    local_module = Module("local_module")
+    local_module.wrap_function(use_external)
+
+    synchronized_types = {External: ("other_module", "External")}
+
+    generated_code = compile_module(local_module, synchronized_types, "test_synchronizer")
+
+    assert "import other_module" in generated_code
+
+
 def test_compile_class_constructor_signature_with_types():
     """Test that constructor signature is preserved with proper type annotations and unwrapping."""
 

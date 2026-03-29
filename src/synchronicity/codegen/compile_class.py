@@ -6,13 +6,11 @@ import inspect
 import types
 import typing
 
+from .annotation_analysis import _contains_self_type, _normalize_async_annotation, _safe_get_annotations
 from .compile_utils import (
     _build_call_with_wrap,
-    _contains_self_type,
     _format_return_annotation,
-    _normalize_async_annotation,
     _parse_parameters_with_transformers,
-    _safe_get_annotations,
 )
 from .signature_utils import is_async_generator
 from .type_transformer import create_transformer
@@ -1051,27 +1049,3 @@ def compile_class(
     all_code.append(wrapper_class_code)
 
     return "\n".join(all_code)
-
-
-def _check_annotation_for_cross_refs(
-    annotation,
-    current_module: str,
-    synchronized_types: dict[type, tuple[str, str]],
-    cross_module_refs: dict,
-) -> None:
-    """Check a type annotation for references to wrapped classes from other modules."""
-    # Handle direct class references
-    if isinstance(annotation, type) and annotation in synchronized_types:
-        target_module, wrapper_name = synchronized_types[annotation]
-        if target_module != current_module:
-            if target_module not in cross_module_refs:
-                cross_module_refs[target_module] = set()
-            cross_module_refs[target_module].add(wrapper_name)
-
-    # Handle generic types
-    import typing
-
-    args = typing.get_args(annotation)
-    if args:
-        for arg in args:
-            _check_annotation_for_cross_refs(arg, current_module, synchronized_types, cross_module_refs)
