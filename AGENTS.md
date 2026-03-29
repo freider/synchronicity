@@ -11,7 +11,8 @@
 
 - When implementing new features, start out by creating an end to end integration test that assumes the new feature already exists in it's future form. This test is expected to initially fail. Then implement the code changes necessary to make the test + other such tests to pass.
 - Ask before making changes to integration tests themselves to make tests pass. Unit tests can be changed more permissively if the output syntax in gencode is intentionded to change.
-- When running pytest, always activate the virtualenv in `.venv` first.
+- If `.venv` does not exist yet, run `uv sync` from the repo root to create it before running tests or tooling.
+- When running pytest, use the virtualenv in `.venv` (for example `source .venv/bin/activate && pytest ...` or `.venv/bin/python -m pytest ...`).
 - Update docs and examples to reflect changes and new features as they are added
 - Preserve accurate feature documentation by checking the current source and tests
 - Use type annotations in examples and implementation fixtures; code generation depends on them.
@@ -23,10 +24,10 @@
 ## Testing and verification
 
 - Primary test command:
-  - `source .venv/bin/activate && pytest test/`
+  - `uv sync && .venv/bin/python -m pytest test/`
 - Useful focused commands:
-  - `source .venv/bin/activate && pytest test/unit/`
-  - `source .venv/bin/activate && pytest test/integration/`
+  - `uv sync && .venv/bin/python -m pytest test/unit/`
+  - `uv sync && .venv/bin/python -m pytest test/integration/`
 - Integration tests generate wrapper modules into `generated/`.
 - Type-checking coverage is part of the test story; integration tests use `pyright` against generated modules and support files.
 
