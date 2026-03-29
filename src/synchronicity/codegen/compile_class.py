@@ -107,6 +107,7 @@ def compile_method_wrapper(
     param_str = callable_analysis.param_str
     call_args_str = callable_analysis.call_args_str
     unwrap_code = callable_analysis.unwrap_code
+    skip_first_param = callable_analysis.skip_first_param
 
     # For the wrapper's __call__ method, param_str is correct (cls/self already skipped).
     # The dummy method signature matches the wrapper's __call__ signature exactly.
