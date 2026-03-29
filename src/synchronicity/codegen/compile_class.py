@@ -16,6 +16,7 @@ from .annotation_analysis import (
 from .compile_utils import (
     _build_call_with_wrap,
     _format_return_annotation,
+    _parse_parameters_with_transformers,
 )
 from .signature_utils import is_async_generator
 from .type_transformer import create_transformer
