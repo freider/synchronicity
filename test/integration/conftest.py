@@ -50,6 +50,7 @@ def generated_wrappers():
         # List all modules we want to compile
         module_args = []
         module_specs = [
+            "async_context_manager_impl",
             "simple_function_impl",
             "simple_class_impl",
             "callback_translation_impl",

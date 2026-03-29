@@ -14,7 +14,11 @@ from .compile_utils import (
     _parse_parameters_with_transformers,
     _safe_get_annotations,
 )
-from .signature_utils import is_async_generator
+from .signature_utils import (
+    async_contextmanager_return_annotation,
+    is_async_contextmanager_wrapper,
+    is_async_generator,
+)
 from .type_transformer import create_transformer
 
 
@@ -87,6 +91,9 @@ def compile_method_wrapper(
     # Get method signature
     sig = inspect.signature(method)
     return_annotation = annotations.get("return", sig.return_annotation)
+
+    if is_async_contextmanager_wrapper(method):
+        return_annotation = async_contextmanager_return_annotation(return_annotation)
 
     # Normalize async def annotations to Awaitable[T] for uniform handling
     # Note: async generators are NOT wrapped in Awaitable
@@ -726,6 +733,12 @@ def compile_class(
         if not name.startswith("_") and name in cls.__dict__ and name not in classmethod_staticmethod_names:
             methods.append((name, method, "instance"))
 
+    # Check for async context manager and iterator protocol methods.
+    has_aenter = "__aenter__" in cls.__dict__
+    has_aexit = "__aexit__" in cls.__dict__
+    aenter_method = cls.__dict__.get("__aenter__")
+    aexit_method = cls.__dict__.get("__aexit__")
+
     # Check for async iterator protocol methods (__aiter__, __anext__)
     has_aiter = "__aiter__" in cls.__dict__
     has_anext = "__anext__" in cls.__dict__
@@ -763,6 +776,8 @@ def compile_class(
         annotations = _safe_get_annotations(method, globals_dict)
         sig = inspect.signature(method)
         return_annotation = annotations.get("return", sig.return_annotation)
+        if is_async_contextmanager_wrapper(method):
+            return_annotation = async_contextmanager_return_annotation(return_annotation)
         # Check if typing.Self is used
         uses_self_type = _contains_self_type(return_annotation) or any(
             _contains_self_type(ann) for ann in annotations.values()
@@ -854,6 +869,92 @@ def compile_class(
     # Generate the wrapper class
     properties_section = "\n\n".join(property_definitions) if property_definitions else ""
     methods_section = "\n\n".join(method_definitions_with_async) if method_definitions_with_async else ""
+
+    # Generate context manager protocol methods if class implements async context manager protocol.
+    context_manager_methods_section = ""
+    if has_aenter and has_aexit:
+        context_methods = []
+
+        aenter_annotations = _safe_get_annotations(aenter_method, globals_dict)
+        aenter_sig = inspect.signature(aenter_method)
+        aenter_return_annotation = aenter_annotations.get("return", aenter_sig.return_annotation)
+        aenter_return_annotation = _normalize_async_annotation(aenter_method, aenter_return_annotation)
+        aenter_transformer_annotation = aenter_return_annotation
+        if aenter_return_annotation is typing.Awaitable[typing.Self]:
+            aenter_transformer_annotation = typing.Awaitable[cls]
+        elif aenter_return_annotation is typing.Self:
+            aenter_transformer_annotation = cls
+        aenter_transformer = create_transformer(aenter_transformer_annotation, synchronized_types_with_self)
+        aenter_sync_return_str, aenter_async_return_str = _format_return_annotation(
+            aenter_transformer, synchronized_types_with_self, synchronizer_name, current_target_module
+        )
+        aenter_sync_body = _build_call_with_wrap(
+            f"{origin_module}.{cls.__name__}.__aenter__(self._impl_instance)",
+            aenter_transformer,
+            synchronized_types_with_self,
+            synchronizer_name,
+            current_target_module,
+            indent="        ",
+            is_async=False,
+        )
+        aenter_async_body = _build_call_with_wrap(
+            f"{origin_module}.{cls.__name__}.__aenter__(self._impl_instance)",
+            aenter_transformer,
+            synchronized_types_with_self,
+            synchronizer_name,
+            current_target_module,
+            indent="        ",
+            is_async=True,
+        )
+        context_methods.append(f"""    def __enter__(self){aenter_sync_return_str}:
+{aenter_sync_body}""")
+        context_methods.append(f"""    async def __aenter__(self){aenter_async_return_str}:
+{aenter_async_body}""")
+
+        aexit_annotations = _safe_get_annotations(aexit_method, globals_dict)
+        aexit_sig = inspect.signature(aexit_method)
+        aexit_return_annotation = aexit_annotations.get("return", aexit_sig.return_annotation)
+        aexit_return_annotation = _normalize_async_annotation(aexit_method, aexit_return_annotation)
+        aexit_transformer = create_transformer(aexit_return_annotation, synchronized_types_with_self)
+        aexit_sync_return_str, aexit_async_return_str = _format_return_annotation(
+            aexit_transformer, synchronized_types_with_self, synchronizer_name, current_target_module
+        )
+        context_methods.append(
+            f"""    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: types.TracebackType | None,
+    ){aexit_sync_return_str}:
+{_build_call_with_wrap(
+    f"{origin_module}.{cls.__name__}.__aexit__(self._impl_instance, exc_type, exc_value, traceback)",
+    aexit_transformer,
+    synchronized_types_with_self,
+    synchronizer_name,
+    current_target_module,
+    indent="        ",
+    is_async=False,
+)}"""
+        )
+        context_methods.append(
+            f"""    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: types.TracebackType | None,
+    ){aexit_async_return_str}:
+{_build_call_with_wrap(
+    f"{origin_module}.{cls.__name__}.__aexit__(self._impl_instance, exc_type, exc_value, traceback)",
+    aexit_transformer,
+    synchronized_types_with_self,
+    synchronizer_name,
+    current_target_module,
+    indent="        ",
+    is_async=True,
+)}"""
+        )
+
+        context_manager_methods_section = "\n\n".join(context_methods)
 
     # Generate iterator protocol methods if class implements async iterator protocol
     # The ONLY special thing about these is that we generate both sync and async variants
@@ -1033,6 +1134,8 @@ def compile_class(
         sections.append(from_impl_method)
     if properties_section:
         sections.append(properties_section)
+    if context_manager_methods_section:
+        sections.append(context_manager_methods_section)
     if iterator_methods_section:
         sections.append(iterator_methods_section)
     if methods_section:

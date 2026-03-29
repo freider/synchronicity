@@ -1,7 +1,8 @@
-"""Dual-mode iterator types that support both sync and async iteration."""
+"""Dual-mode helper types for wrapped async protocols."""
 
 from __future__ import annotations
 
+import types
 import typing
 from typing import AsyncIterator, Callable, Generic, Iterator, TypeVar
 
@@ -121,3 +122,57 @@ class SyncOrAsyncIterable(Generic[T]):
                 yield self._item_wrapper(item)
             else:
                 yield item
+
+
+class SyncOrAsyncContextManager(Generic[T]):
+    """Context manager that supports both ``with`` and ``async with``.
+
+    Args:
+        async_context_manager: The underlying async context manager object.
+        synchronizer: The synchronizer used to bridge sync and async entry/exit.
+        value_wrapper: Optional function used to wrap the value returned from
+            ``__aenter__`` before it is exposed to user code.
+    """
+
+    def __init__(
+        self,
+        async_context_manager: typing.Any,
+        synchronizer: "Synchronizer",
+        value_wrapper: Callable[[typing.Any], T] | None = None,
+    ):
+        self._async_context_manager = async_context_manager
+        self._synchronizer = synchronizer
+        self._value_wrapper = value_wrapper
+
+    def _wrap_value(self, value: typing.Any) -> T:
+        if self._value_wrapper is not None:
+            return self._value_wrapper(value)
+        return value
+
+    def __enter__(self) -> T:
+        value = self._synchronizer._run_function_sync(self._async_context_manager.__aenter__())
+        return self._wrap_value(value)
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: types.TracebackType | None,
+    ) -> typing.Any:
+        return self._synchronizer._run_function_sync(
+            self._async_context_manager.__aexit__(exc_type, exc_value, traceback)
+        )
+
+    async def __aenter__(self) -> T:
+        value = await self._synchronizer._run_function_async(self._async_context_manager.__aenter__())
+        return self._wrap_value(value)
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: types.TracebackType | None,
+    ) -> typing.Any:
+        return await self._synchronizer._run_function_async(
+            self._async_context_manager.__aexit__(exc_type, exc_value, traceback)
+        )

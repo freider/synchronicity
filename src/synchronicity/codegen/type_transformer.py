@@ -10,6 +10,7 @@ Transformers compose through nesting for complex types like list[Person].
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import typing
 from abc import ABC, abstractmethod
@@ -814,6 +815,73 @@ class AsyncIterableTransformer(TypeTransformer):
         return helpers
 
 
+class AsyncContextManagerTransformer(TypeTransformer):
+    """Transformer for async context manager values."""
+
+    def __init__(self, value_transformer: TypeTransformer):
+        self.value_transformer = value_transformer
+
+    def wrapped_type(
+        self, synchronized_types: dict[type, tuple[str, str]], target_module: str, is_async: bool = True
+    ) -> str:
+        value_type_str = self.value_transformer.wrapped_type(synchronized_types, target_module, is_async)
+        if is_async:
+            return f"typing.AsyncContextManager[{value_type_str}]"
+        return f"synchronicity.types.SyncOrAsyncContextManager[{value_type_str}]"
+
+    def unwrap_expr(self, synchronized_types: dict[type, tuple[str, str]], var_name: str) -> str:
+        """Context manager objects are passed through unchanged."""
+        return var_name
+
+    def wrap_expr(
+        self, synchronized_types: dict[type, tuple[str, str]], target_module: str, var_name: str, is_async: bool = True
+    ) -> str:
+        synchronizer_name = "s"  # Default synchronizer name
+
+        if not self.value_transformer.needs_translation():
+            return (
+                f"synchronicity.types.SyncOrAsyncContextManager({var_name}, "
+                f"get_synchronizer('{synchronizer_name}'))"
+            )
+
+        helper_name = self._get_helper_name(synchronized_types, target_module)
+        return (
+            f"synchronicity.types.SyncOrAsyncContextManager({var_name}, "
+            f"get_synchronizer('{synchronizer_name}'), value_wrapper={helper_name})"
+        )
+
+    def needs_translation(self) -> bool:
+        """Async context managers always need wrapping to expose sync/async entry."""
+        return True
+
+    def _get_helper_name(self, synchronized_types: dict[type, tuple[str, str]], target_module: str) -> str:
+        value_type_str = self.value_transformer.wrapped_type(synchronized_types, target_module)
+        sanitized = value_type_str.replace("[", "_").replace("]", "").replace(".", "_").replace(", ", "_")
+        return f"_wrap_async_cm_value_{sanitized}"
+
+    def get_wrapper_helpers(
+        self,
+        synchronized_types: dict[type, tuple[str, str]],
+        target_module: str,
+        synchronizer_name: str,
+        indent: str = "    ",
+    ) -> dict[str, str]:
+        helpers = {}
+        helpers.update(
+            self.value_transformer.get_wrapper_helpers(synchronized_types, target_module, synchronizer_name, indent)
+        )
+
+        if not self.value_transformer.needs_translation():
+            return helpers
+
+        helper_name = self._get_helper_name(synchronized_types, target_module)
+        wrap_expr = self.value_transformer.wrap_expr(synchronized_types, target_module, "_value", is_async=True)
+        wrap_expr = wrap_expr.replace("self.", "")
+        helpers[helper_name] = f"""def {helper_name}(_value):
+    return {wrap_expr}"""
+        return helpers
+
+
 class CoroutineTransformer(TypeTransformer):
     """Transformer for Coroutine[YieldType, SendType, ReturnType] types.
 
@@ -1000,6 +1068,14 @@ def create_transformer(annotation, synchronized_types: dict[type, tuple[str, str
         else:
             # Bare AsyncIterable with no type args
             return AsyncIterableTransformer(IdentityTransformer(typing.Any))
+
+    # AsyncContextManager[T] / AbstractAsyncContextManager[T]
+    if origin is contextlib.AbstractAsyncContextManager:
+        if args:
+            value_transformer = create_transformer(args[0], synchronized_types)
+            return AsyncContextManagerTransformer(value_transformer)
+        else:
+            return AsyncContextManagerTransformer(IdentityTransformer(typing.Any))
 
     # AsyncGenerator[T, Send] - two type args
     if origin is collections.abc.AsyncGenerator:

@@ -1,6 +1,7 @@
 """Utilities for parsing and formatting function/method signatures."""
 
 import collections.abc
+import contextlib
 import inspect
 import typing
 
@@ -27,6 +28,38 @@ def is_async_generator(func_or_method, return_annotation) -> bool:
         )
 
     return False
+
+
+def is_async_contextmanager_wrapper(func_or_method) -> bool:
+    """Check if a callable is a stdlib ``@asynccontextmanager`` wrapper."""
+    wrapped = getattr(func_or_method, "__wrapped__", None)
+    if wrapped is None or not inspect.isasyncgenfunction(wrapped):
+        return False
+
+    code = getattr(func_or_method, "__code__", None)
+    if code is None:
+        return False
+
+    # contextlib.asynccontextmanager returns a normal function named ``helper``
+    # that closes over the original async generator in ``func``.
+    return code.co_name == "helper" and "func" in code.co_freevars
+
+
+def async_contextmanager_return_annotation(return_annotation):
+    """Translate async generator-style annotations to ``AsyncContextManager[T]``."""
+    if return_annotation == inspect.Signature.empty:
+        return typing.AsyncContextManager[typing.Any]
+
+    origin = typing.get_origin(return_annotation)
+    args = typing.get_args(return_annotation)
+    if origin in (collections.abc.AsyncGenerator, collections.abc.AsyncIterator):
+        item_annotation = args[0] if args else typing.Any
+        return typing.AsyncContextManager[item_annotation]
+
+    if origin is contextlib.AbstractAsyncContextManager:
+        return return_annotation
+
+    return typing.AsyncContextManager[typing.Any]
 
 
 def returns_awaitable(return_annotation) -> bool:

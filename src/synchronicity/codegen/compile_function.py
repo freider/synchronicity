@@ -13,7 +13,11 @@ from .compile_utils import (
     _parse_parameters_with_transformers,
     _safe_get_annotations,
 )
-from .signature_utils import is_async_generator
+from .signature_utils import (
+    async_contextmanager_return_annotation,
+    is_async_contextmanager_wrapper,
+    is_async_generator,
+)
 from .type_transformer import (
     AsyncGeneratorTransformer,
     AsyncIteratorTransformer,
@@ -51,6 +55,10 @@ def compile_function(
     # Get function signature
     sig = inspect.signature(f)
     return_annotation = annotations.get("return", sig.return_annotation)
+
+    # stdlib @asynccontextmanager wraps the original async generator in a sync helper.
+    if is_async_contextmanager_wrapper(f):
+        return_annotation = async_contextmanager_return_annotation(return_annotation)
 
     # Normalize async def annotations to Awaitable[T] for uniform handling
     # Note: async generators are NOT wrapped in Awaitable
