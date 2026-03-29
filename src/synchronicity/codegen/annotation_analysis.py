@@ -8,6 +8,7 @@ helpers in the rest of the codegen package.
 from __future__ import annotations
 
 import collections.abc
+import dataclasses
 import importlib
 import inspect
 import sys
@@ -15,6 +16,26 @@ import types
 import typing
 
 from .signature_utils import is_async_generator
+from .type_transformer import (
+    AsyncGeneratorTransformer,
+    AsyncIteratorTransformer,
+    AwaitableTransformer,
+    CoroutineTransformer,
+    TypeTransformer,
+    create_transformer,
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class CallableReturnAnalysis:
+    """Normalized return-analysis data shared by function and method compilation."""
+
+    annotations: dict[str, typing.Any]
+    signature: inspect.Signature
+    return_annotation: typing.Any
+    return_transformer: TypeTransformer
+    is_async_generator: bool
+    needs_async_wrapper: bool
 
 
 def _normalize_async_annotation(func, return_annotation):
@@ -156,3 +177,32 @@ def _get_cross_module_imports(
                     _check_annotation_for_cross_refs(annotation, module_name, synchronized_types, cross_module_refs)
 
     return cross_module_refs
+
+
+def _analyze_callable_return(
+    func,
+    synchronized_types: dict[type, tuple[str, str]],
+    globals_dict: dict[str, typing.Any] | None = None,
+) -> CallableReturnAnalysis:
+    """Analyze the return path for a callable without rendering any code."""
+    annotations = _safe_get_annotations(func, globals_dict)
+    signature = inspect.signature(func)
+    return_annotation = annotations.get("return", signature.return_annotation)
+    return_annotation = _normalize_async_annotation(func, return_annotation)
+
+    return_transformer = create_transformer(return_annotation, synchronized_types)
+    is_async_gen = is_async_generator(func, return_annotation)
+
+    if is_async_gen and isinstance(return_transformer, AsyncIteratorTransformer):
+        return_transformer = AsyncGeneratorTransformer(return_transformer.item_transformer, send_type_str=None)
+
+    needs_async_wrapper = is_async_gen or isinstance(return_transformer, (AwaitableTransformer, CoroutineTransformer))
+
+    return CallableReturnAnalysis(
+        annotations=annotations,
+        signature=signature,
+        return_annotation=return_annotation,
+        return_transformer=return_transformer,
+        is_async_generator=is_async_gen,
+        needs_async_wrapper=needs_async_wrapper,
+    )

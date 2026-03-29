@@ -6,7 +6,7 @@ import inspect
 import types
 import typing
 
-from .annotation_analysis import _contains_self_type, _normalize_async_annotation, _safe_get_annotations
+from .annotation_analysis import _analyze_callable_return, _contains_self_type, _safe_get_annotations
 from .compile_utils import (
     _build_call_with_wrap,
     _format_return_annotation,
@@ -84,11 +84,13 @@ def compile_method_wrapper(
 
     # Get method signature
     sig = inspect.signature(method)
-    return_annotation = annotations.get("return", sig.return_annotation)
 
-    # Normalize async def annotations to Awaitable[T] for uniform handling
-    # Note: async generators are NOT wrapped in Awaitable
-    return_annotation = _normalize_async_annotation(method, return_annotation)
+    return_analysis = _prepare_callable_return_analysis(
+        method,
+        annotations,
+        synchronized_types,
+    )
+    return_annotation = return_analysis.normalized_return_annotation
 
     # Check if typing.Self is used in any annotation
     uses_self_type = _contains_self_type(return_annotation) or any(
@@ -96,7 +98,7 @@ def compile_method_wrapper(
     )
 
     # Create transformer for return type (keep Self as-is, don't replace with impl class)
-    return_transformer = create_transformer(return_annotation, synchronized_types)
+    return_transformer = return_analysis.return_transformer
 
     # Parse parameters using transformers
     # Skip first parameter for instance methods and classmethods (self/cls),
@@ -125,27 +127,9 @@ def compile_method_wrapper(
         else:
             dummy_param_str = f'cls: type["{class_name}"]'
 
-    # Check if it's an async generator
-    # Note: After normalization, async generators are NOT wrapped in Awaitable
-    is_async_gen = is_async_generator(method, return_annotation)
-
-    # If it's actually a generator method, override the return transformer to use AsyncGeneratorTransformer
-    # even if it's annotated as AsyncIterator (since AsyncGenerator is a subtype of AsyncIterator)
-    if is_async_gen:
-        from .type_transformer import AsyncGeneratorTransformer, AsyncIteratorTransformer
-
-        if isinstance(return_transformer, AsyncIteratorTransformer):
-            # Convert AsyncIteratorTransformer to AsyncGeneratorTransformer
-            # since the method is actually a generator
-            # Pass send_type_str=None (not "None") to omit the send type from the annotation
-            return_transformer = AsyncGeneratorTransformer(return_transformer.item_transformer, send_type_str=None)
-
-    # Import here to avoid circular imports
-    from .type_transformer import AwaitableTransformer, CoroutineTransformer
-
-    # Determine if this needs async/sync wrappers based on the transformer type
-    # After normalization, async def methods have AwaitableTransformer
-    is_async = is_async_gen or isinstance(return_transformer, (AwaitableTransformer, CoroutineTransformer))
+    # Determine if this needs async/sync wrappers based on shared callable analysis
+    is_async_gen = return_analysis.is_async_generator
+    is_async = return_analysis.needs_async_wrapper
 
     # Format return types
     sync_return_str, async_return_str = _format_return_annotation(
