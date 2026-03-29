@@ -48,6 +48,22 @@ class CallableSignatureAnalysis:
     skip_first_param: bool
 
 
+@dataclasses.dataclass(frozen=True)
+class CallableAnalysis:
+    """Combined callable analysis used by function and method compilation."""
+
+    annotations: dict[str, typing.Any]
+    signature: inspect.Signature
+    return_annotation: typing.Any
+    return_transformer: TypeTransformer
+    is_async_generator: bool
+    needs_async_wrapper: bool
+    param_str: str
+    call_args_str: str
+    unwrap_code: str
+    skip_first_param: bool
+
+
 def _normalize_async_annotation(func, return_annotation):
     """
     Normalize async function annotations to Awaitable[T] for uniform handling.
@@ -252,4 +268,41 @@ def _analyze_callable_signature(
         call_args_str=call_args_str,
         unwrap_code=unwrap_code,
         skip_first_param=skip_first_param,
+    )
+
+
+def _analyze_callable(
+    func,
+    synchronized_types: dict[type, tuple[str, str]],
+    synchronizer_name: str,
+    current_target_module: str,
+    *,
+    skip_first_param: bool,
+    unwrap_indent: str = "    ",
+    globals_dict: dict[str, typing.Any] | None = None,
+) -> CallableAnalysis:
+    """Analyze a callable's return and signature data without rendering any code."""
+    return_analysis = _analyze_callable_return(func, synchronized_types, globals_dict)
+    signature_analysis = _analyze_callable_signature(
+        func,
+        synchronized_types,
+        synchronizer_name,
+        current_target_module,
+        skip_first_param=skip_first_param,
+        unwrap_indent=unwrap_indent,
+        annotations=return_analysis.annotations,
+        signature=return_analysis.signature,
+    )
+
+    return CallableAnalysis(
+        annotations=return_analysis.annotations,
+        signature=return_analysis.signature,
+        return_annotation=return_analysis.return_annotation,
+        return_transformer=return_analysis.return_transformer,
+        is_async_generator=return_analysis.is_async_generator,
+        needs_async_wrapper=return_analysis.needs_async_wrapper,
+        param_str=signature_analysis.param_str,
+        call_args_str=signature_analysis.call_args_str,
+        unwrap_code=signature_analysis.unwrap_code,
+        skip_first_param=signature_analysis.skip_first_param,
     )

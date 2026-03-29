@@ -7,8 +7,7 @@ import types
 import typing
 
 from .annotation_analysis import (
-    _analyze_callable_return,
-    _analyze_callable_signature,
+    _analyze_callable,
     _contains_self_type,
     _normalize_async_annotation,
     _safe_get_annotations,
@@ -86,14 +85,17 @@ def compile_method_wrapper(
         - sync_method_code: The dummy method with descriptor decorator
     """
     # Resolve all type annotations (with fallback for TYPE_CHECKING imports)
-    return_analysis = _analyze_callable_return(
+    callable_analysis = _analyze_callable(
         method,
         synchronized_types,
-        globals_dict,
+        synchronizer_name,
+        current_target_module,
+        skip_first_param=method_type in ("instance", "classmethod"),
+        globals_dict=globals_dict,
     )
-    annotations = return_analysis.annotations
-    sig = return_analysis.signature
-    return_annotation = return_analysis.return_annotation
+    annotations = callable_analysis.annotations
+    sig = callable_analysis.signature
+    return_annotation = callable_analysis.return_annotation
 
     # Check if typing.Self is used in any annotation
     uses_self_type = _contains_self_type(return_annotation) or any(
@@ -101,26 +103,10 @@ def compile_method_wrapper(
     )
 
     # Create transformer for return type (keep Self as-is, don't replace with impl class)
-    return_transformer = return_analysis.return_transformer
-
-    # Parse parameters using transformers
-    # Skip first parameter for instance methods and classmethods (self/cls),
-    # but not for staticmethods
-    skip_first_param = method_type in ("instance", "classmethod")
-
-    signature_analysis = _analyze_callable_signature(
-        method,
-        synchronized_types,
-        synchronizer_name,
-        current_target_module,
-        skip_first_param=skip_first_param,
-        unwrap_indent="    ",
-        annotations=annotations,
-        signature=sig,
-    )
-    param_str = signature_analysis.param_str
-    call_args_str = signature_analysis.call_args_str
-    unwrap_code = signature_analysis.unwrap_code
+    return_transformer = callable_analysis.return_transformer
+    param_str = callable_analysis.param_str
+    call_args_str = callable_analysis.call_args_str
+    unwrap_code = callable_analysis.unwrap_code
 
     # For the wrapper's __call__ method, param_str is correct (cls/self already skipped).
     # The dummy method signature matches the wrapper's __call__ signature exactly.
@@ -135,8 +121,8 @@ def compile_method_wrapper(
             dummy_param_str = f'cls: type["{class_name}"]'
 
     # Determine if this needs async/sync wrappers based on shared callable analysis
-    is_async_gen = return_analysis.is_async_generator
-    is_async = return_analysis.needs_async_wrapper
+    is_async_gen = callable_analysis.is_async_generator
+    is_async = callable_analysis.needs_async_wrapper
 
     # Format return types
     sync_return_str, async_return_str = _format_return_annotation(

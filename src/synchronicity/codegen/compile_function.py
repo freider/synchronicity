@@ -5,7 +5,7 @@ from __future__ import annotations
 import types
 import typing
 
-from .annotation_analysis import _analyze_callable_return, _analyze_callable_signature
+from .annotation_analysis import _analyze_callable
 from .compile_utils import _build_call_with_wrap, _format_return_annotation
 
 
@@ -33,31 +33,22 @@ def compile_function(
     origin_module = f.__module__
     current_target_module = target_module
 
-    return_analysis = _analyze_callable_return(
-        f,
-        synchronized_types,
-        globals_dict,
-    )
-    annotations = return_analysis.annotations
-    sig = return_analysis.signature
-    return_transformer = return_analysis.return_transformer
-
-    signature_analysis = _analyze_callable_signature(
+    callable_analysis = _analyze_callable(
         f,
         synchronized_types,
         synchronizer_name,
         current_target_module,
         skip_first_param=False,
         unwrap_indent="    ",
-        annotations=annotations,
-        signature=sig,
+        globals_dict=globals_dict,
     )
-    param_str = signature_analysis.param_str
-    call_args_str = signature_analysis.call_args_str
-    unwrap_code = signature_analysis.unwrap_code
+    return_transformer = callable_analysis.return_transformer
+    param_str = callable_analysis.param_str
+    call_args_str = callable_analysis.call_args_str
+    unwrap_code = callable_analysis.unwrap_code
 
-    is_async_gen = return_analysis.is_async_generator
-    needs_async_wrapper = return_analysis.needs_async_wrapper
+    is_async_gen = callable_analysis.is_async_generator
+    needs_async_wrapper = callable_analysis.needs_async_wrapper
 
     # For non-async functions, generate simple wrapper without @wrapped_function decorator
     if not needs_async_wrapper:
