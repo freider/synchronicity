@@ -64,6 +64,17 @@ class CallableAnalysis:
     skip_first_param: bool
 
 
+@dataclasses.dataclass(frozen=True)
+class MethodPlan:
+    """Method-specific planning data layered on top of shared callable analysis."""
+
+    method_type: str
+    call_expr_prefix: str
+    dummy_param_str: str
+    decorator_func: str
+    skip_first_param: bool
+
+
 def _normalize_async_annotation(func, return_annotation):
     """
     Normalize async function annotations to Awaitable[T] for uniform handling.
@@ -305,4 +316,46 @@ def _analyze_callable(
         call_args_str=signature_analysis.call_args_str,
         unwrap_code=signature_analysis.unwrap_code,
         skip_first_param=signature_analysis.skip_first_param,
+    )
+
+
+def _plan_method_wrapper(
+    method_name: str,
+    method_type: str,
+    class_name: str,
+    origin_module: str,
+    call_args_str: str,
+    param_str: str,
+    *,
+    skip_first_param: bool,
+) -> MethodPlan:
+    """Plan method-specific wrapper details without rendering method bodies."""
+    if method_type == "instance":
+        call_expr_prefix = f"impl_method(wrapper_instance._impl_instance, {call_args_str})"
+        decorator_func = "wrapped_method"
+    elif method_type == "classmethod":
+        impl_class_ref = f"{origin_module}.{class_name}"
+        call_expr_prefix = f"{impl_class_ref}.{method_name}({call_args_str})"
+        decorator_func = "wrapped_classmethod"
+    elif method_type == "staticmethod":
+        impl_class_ref = f"{origin_module}.{class_name}"
+        call_expr_prefix = f"{impl_class_ref}.{method_name}({call_args_str})"
+        decorator_func = "wrapped_staticmethod"
+    else:
+        call_expr_prefix = f"impl_method(wrapper_instance._impl_instance, {call_args_str})"
+        decorator_func = "wrapped_method"
+
+    dummy_param_str = param_str
+    if method_type == "classmethod":
+        if dummy_param_str:
+            dummy_param_str = f'cls: type["{class_name}"], {dummy_param_str}'
+        else:
+            dummy_param_str = f'cls: type["{class_name}"]'
+
+    return MethodPlan(
+        method_type=method_type,
+        call_expr_prefix=call_expr_prefix,
+        dummy_param_str=dummy_param_str,
+        decorator_func=decorator_func,
+        skip_first_param=skip_first_param,
     )

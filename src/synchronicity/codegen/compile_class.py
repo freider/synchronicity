@@ -8,6 +8,7 @@ import typing
 
 from .annotation_analysis import (
     _analyze_callable,
+    _build_method_plan,
     _contains_self_type,
     _normalize_async_annotation,
     _safe_get_annotations,
@@ -109,17 +110,15 @@ def compile_method_wrapper(
     unwrap_code = callable_analysis.unwrap_code
     skip_first_param = callable_analysis.skip_first_param
 
-    # For the wrapper's __call__ method, param_str is correct (cls/self already skipped).
-    # The dummy method signature matches the wrapper's __call__ signature exactly.
-    # The descriptor's __get__ overload tells pyright what type is returned when accessing Class.method.
-    # For classmethods, we add cls parameter to dummy signature to help type checking
-    # (though it's not in the actual wrapper __call__, the descriptor handles binding correctly)
-    dummy_param_str = param_str
-    if method_type == "classmethod":
-        if dummy_param_str:
-            dummy_param_str = f'cls: type["{class_name}"], {dummy_param_str}'
-        else:
-            dummy_param_str = f'cls: type["{class_name}"]'
+    method_plan = _build_method_plan(
+        method_name=method_name,
+        method_type=method_type,
+        origin_module=origin_module,
+        class_name=class_name,
+        call_args_str=call_args_str,
+        param_str=param_str,
+        skip_first_param=skip_first_param,
+    )
 
     # Determine if this needs async/sync wrappers based on shared callable analysis
     is_async_gen = callable_analysis.is_async_generator
@@ -129,25 +128,7 @@ def compile_method_wrapper(
     sync_return_str, async_return_str = _format_return_annotation(
         return_transformer, synchronized_types, synchronizer_name, current_target_module
     )
-
-    # Build the call expression based on method type
-    # For instance methods, we need to reference wrapper_instance parameter
-    # For classmethods/staticmethods, we'll handle differently
-    if method_type == "instance":
-        # For instance methods in wrapper functions, use wrapper_instance parameter
-        call_expr_prefix = f"impl_method(wrapper_instance._impl_instance, {call_args_str})"
-    elif method_type == "classmethod":
-        # For classmethod wrapper functions, pass wrapper_class as cls (which becomes the impl class)
-        # The call should reference the impl class directly
-        impl_class_ref = f"{origin_module}.{class_name}"
-        call_expr_prefix = f"{impl_class_ref}.{method_name}({call_args_str})"
-    elif method_type == "staticmethod":
-        # For staticmethod wrapper functions, call via the class (no bound instance)
-        impl_class_ref = f"{origin_module}.{class_name}"
-        call_expr_prefix = f"{impl_class_ref}.{method_name}({call_args_str})"
-    else:
-        # Fallback
-        call_expr_prefix = f"impl_method(wrapper_instance._impl_instance, {call_args_str})"
+    call_expr_prefix = method_plan.call_expr_prefix
 
     # Build both sync and async bodies (or just sync for non-async methods)
     # For instance methods, these will be wrapper functions
@@ -499,20 +480,6 @@ def compile_method_wrapper(
         # Fallback - should not happen
         wrapper_functions_code = ""
 
-    # Extract parameter names (excluding 'self'/'cls') for the call, with proper varargs handling
-    param_call_parts = []
-    for i, (name, param) in enumerate(sig.parameters.items()):
-        if skip_first_param and i == 0:
-            continue
-        if param.kind == inspect.Parameter.VAR_POSITIONAL:
-            param_call_parts.append(f"*{name}")
-        elif param.kind == inspect.Parameter.VAR_KEYWORD:
-            param_call_parts.append(f"**{name}")
-        elif param.kind == inspect.Parameter.KEYWORD_ONLY:
-            param_call_parts.append(f"{name}={name}")
-        else:
-            param_call_parts.append(name)
-
     # Build parameterized wrapper class/function name for decorator
     decorator_typevars = []
 
@@ -524,13 +491,7 @@ def compile_method_wrapper(
     if generic_typevars:
         decorator_typevars.extend(list(generic_typevars.keys()))
 
-    # Choose the appropriate decorator function based on method type
-    if method_type == "classmethod":
-        decorator_func = "wrapped_classmethod"
-    elif method_type == "staticmethod":
-        decorator_func = "wrapped_staticmethod"
-    else:
-        decorator_func = "wrapped_method"
+    decorator_func = method_plan.decorator_func
 
     # Build the method body - contains sync wrapper logic
     # For async methods, we'll pass the async wrapper to the decorator
@@ -597,23 +558,11 @@ def compile_method_wrapper(
     if method_type in ("classmethod", "staticmethod"):
         # For classmethods, use plain cls (not cls: type["Class"]) since @classmethod handles binding
         if method_type == "classmethod":
-            # Remove type annotation from cls parameter
-            if param_str:
-                plain_param_str = f"cls, {param_str}"
-            else:
-                plain_param_str = "cls"
-            def_line = f"    def {method_name}({plain_param_str}){sync_return_str}:"
+            def_line = f"    def {method_name}({method_plan.public_signature_param_str}){sync_return_str}:"
         else:
-            # Use dummy_param_str for staticmethods
-            def_line = f"    def {method_name}({dummy_param_str}){sync_return_str}:"
+            def_line = f"    def {method_name}({method_plan.dummy_param_str}){sync_return_str}:"
     else:
-        # For instance methods, add self parameter to signature for dummy method
-        # (param_str already excludes self since it was skipped, but body uses self)
-        if param_str:
-            instance_param_str = f"self, {param_str}"
-        else:
-            instance_param_str = "self"
-        def_line = f"    def {method_name}({instance_param_str}){sync_return_str}:"
+        def_line = f"    def {method_name}({method_plan.public_signature_param_str}){sync_return_str}:"
 
     # Build the method code - handle decorator line differently for sync-only vs async
     if decorator_line:
