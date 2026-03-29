@@ -38,6 +38,16 @@ class CallableReturnAnalysis:
     needs_async_wrapper: bool
 
 
+@dataclasses.dataclass(frozen=True)
+class CallableSignatureAnalysis:
+    """Shared callable signature/parameter analysis used before rendering."""
+
+    param_str: str
+    call_args_str: str
+    unwrap_code: str
+    skip_first_param: bool
+
+
 def _normalize_async_annotation(func, return_annotation):
     """
     Normalize async function annotations to Awaitable[T] for uniform handling.
@@ -205,4 +215,41 @@ def _analyze_callable_return(
         return_transformer=return_transformer,
         is_async_generator=is_async_gen,
         needs_async_wrapper=needs_async_wrapper,
+    )
+
+
+def _analyze_callable_signature(
+    func,
+    synchronized_types: dict[type, tuple[str, str]],
+    synchronizer_name: str,
+    current_target_module: str,
+    *,
+    skip_first_param: bool,
+    unwrap_indent: str = "    ",
+    annotations: dict[str, typing.Any] | None = None,
+    signature: inspect.Signature | None = None,
+) -> CallableSignatureAnalysis:
+    """Analyze callable parameters into render-ready signature/call fragments."""
+    from .compile_utils import _parse_parameters_with_transformers
+
+    if annotations is None:
+        annotations = _safe_get_annotations(func)
+    if signature is None:
+        signature = inspect.signature(func)
+
+    param_str, call_args_str, unwrap_code = _parse_parameters_with_transformers(
+        signature,
+        annotations,
+        synchronized_types,
+        synchronizer_name,
+        current_target_module,
+        skip_first_param=skip_first_param,
+        unwrap_indent=unwrap_indent,
+    )
+
+    return CallableSignatureAnalysis(
+        param_str=param_str,
+        call_args_str=call_args_str,
+        unwrap_code=unwrap_code,
+        skip_first_param=skip_first_param,
     )

@@ -8,6 +8,7 @@ import typing
 
 from .annotation_analysis import (
     _analyze_callable_return,
+    _analyze_callable_signature,
     _contains_self_type,
     _normalize_async_annotation,
     _safe_get_annotations,
@@ -15,7 +16,6 @@ from .annotation_analysis import (
 from .compile_utils import (
     _build_call_with_wrap,
     _format_return_annotation,
-    _parse_parameters_with_transformers,
 )
 from .signature_utils import is_async_generator
 from .type_transformer import create_transformer
@@ -85,16 +85,13 @@ def compile_method_wrapper(
         - sync_method_code: The dummy method with descriptor decorator
     """
     # Resolve all type annotations (with fallback for TYPE_CHECKING imports)
-    annotations = _safe_get_annotations(method, globals_dict)
-
-    # Get method signature
-    sig = inspect.signature(method)
-
     return_analysis = _analyze_callable_return(
         method,
         synchronized_types,
         globals_dict,
     )
+    annotations = return_analysis.annotations
+    sig = return_analysis.signature
     return_annotation = return_analysis.return_annotation
 
     # Check if typing.Self is used in any annotation
@@ -110,15 +107,19 @@ def compile_method_wrapper(
     # but not for staticmethods
     skip_first_param = method_type in ("instance", "classmethod")
 
-    param_str, call_args_str, unwrap_code = _parse_parameters_with_transformers(
-        sig,
-        annotations,
+    signature_analysis = _analyze_callable_signature(
+        method,
         synchronized_types,
         synchronizer_name,
         current_target_module,
         skip_first_param=skip_first_param,
         unwrap_indent="    ",
+        annotations=annotations,
+        signature=sig,
     )
+    param_str = signature_analysis.param_str
+    call_args_str = signature_analysis.call_args_str
+    unwrap_code = signature_analysis.unwrap_code
 
     # For the wrapper's __call__ method, param_str is correct (cls/self already skipped).
     # The dummy method signature matches the wrapper's __call__ signature exactly.

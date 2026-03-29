@@ -5,12 +5,8 @@ from __future__ import annotations
 import types
 import typing
 
-from .annotation_analysis import _analyze_callable_return
-from .compile_utils import (
-    _build_call_with_wrap,
-    _format_return_annotation,
-    _parse_parameters_with_transformers,
-)
+from .annotation_analysis import _analyze_callable_return, _analyze_callable_signature
+from .compile_utils import _build_call_with_wrap, _format_return_annotation
 
 
 def compile_function(
@@ -46,16 +42,19 @@ def compile_function(
     sig = return_analysis.signature
     return_transformer = return_analysis.return_transformer
 
-    # Parse parameters using transformers
-    param_str, call_args_str, unwrap_code = _parse_parameters_with_transformers(
-        sig,
-        annotations,
+    signature_analysis = _analyze_callable_signature(
+        f,
         synchronized_types,
         synchronizer_name,
         current_target_module,
         skip_first_param=False,
         unwrap_indent="    ",
+        annotations=annotations,
+        signature=sig,
     )
+    param_str = signature_analysis.param_str
+    call_args_str = signature_analysis.call_args_str
+    unwrap_code = signature_analysis.unwrap_code
 
     is_async_gen = return_analysis.is_async_generator
     needs_async_wrapper = return_analysis.needs_async_wrapper
