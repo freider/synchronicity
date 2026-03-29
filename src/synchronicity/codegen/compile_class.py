@@ -52,6 +52,177 @@ def _convert_async_to_sync_type(type_str: str) -> str:
     return type_str
 
 
+def _prefix_body(body: str, prefix: str) -> str:
+    if not prefix:
+        return body
+    if not body:
+        return prefix
+    return f"{prefix}\n{body}"
+
+
+def _prefix_unwrap_and_body(unwrap_code: str, body: str, *, prefix: str = "") -> str:
+    combined = body
+    if unwrap_code:
+        combined = _prefix_body(combined, unwrap_code)
+    if prefix:
+        combined = _prefix_body(combined, prefix)
+    return combined
+
+
+def _build_wrapped_method_body(
+    call_expr_prefix: str,
+    return_transformer,
+    synchronized_types: dict[type, tuple[str, str]],
+    synchronizer_name: str,
+    current_target_module: str,
+    unwrap_code: str,
+    *,
+    is_async: bool,
+    prefix: str = "",
+) -> str:
+    body = _build_call_with_wrap(
+        call_expr_prefix,
+        return_transformer,
+        synchronized_types,
+        synchronizer_name,
+        current_target_module,
+        indent="    ",
+        is_async=is_async,
+    )
+    return _prefix_unwrap_and_body(unwrap_code, body, prefix=prefix)
+
+
+def _build_generator_method_bodies(
+    method_type: str,
+    call_expr_prefix: str,
+    return_transformer,
+    synchronized_types: dict[type, tuple[str, str]],
+    current_target_module: str,
+    unwrap_code: str,
+    *,
+    wrap_expr_async_replacement: str | None = None,
+    wrap_expr_sync_replacement: str | None = None,
+    prefix: str = "",
+) -> tuple[str, str]:
+    gen_call = call_expr_prefix
+    wrap_expr_raw = return_transformer.wrap_expr(synchronized_types, current_target_module, "gen")
+    if wrap_expr_async_replacement is not None:
+        wrap_expr = wrap_expr_raw.replace("self.", wrap_expr_async_replacement)
+    else:
+        wrap_expr = wrap_expr_raw
+
+    unwrap_lines = f"{unwrap_code}\n" if unwrap_code else ""
+    if method_type == "instance":
+        unwrap_lines = f"\n{unwrap_code}\n" if unwrap_code else "\n"
+
+    aio_body = (
+        f"    {prefix}{unwrap_lines}"
+        f"    gen = {gen_call}\n"
+        f"    _wrapped = {wrap_expr}\n"
+        f"    _sent = None\n"
+        f"    try:\n"
+        f"        while True:\n"
+        f"            try:\n"
+        f"                _item = await _wrapped.asend(_sent)\n"
+        f"                _sent = yield _item\n"
+        f"            except StopAsyncIteration:\n"
+        f"                break\n"
+        f"    finally:\n"
+        f"        await _wrapped.aclose()"
+    )
+
+    sync_wrap_expr = return_transformer.wrap_expr(synchronized_types, current_target_module, "gen", is_async=False)
+    if wrap_expr_sync_replacement is not None:
+        sync_wrap_expr = sync_wrap_expr.replace("self.", wrap_expr_sync_replacement)
+
+    sync_lines = []
+    if prefix:
+        sync_lines.append(prefix)
+    if unwrap_code:
+        sync_lines.append(unwrap_code)
+    sync_lines.append(f"    gen = {gen_call}")
+    sync_lines.append(f"    yield from {sync_wrap_expr}")
+    sync_method_body = "\n".join(sync_lines)
+
+    return aio_body, sync_method_body
+
+
+def _build_method_bodies(
+    method_type: str,
+    call_expr_prefix: str,
+    return_transformer,
+    synchronized_types: dict[type, tuple[str, str]],
+    synchronizer_name: str,
+    current_target_module: str,
+    unwrap_code: str,
+    *,
+    is_async: bool,
+    is_async_gen: bool,
+    impl_method_line: str | None = None,
+    class_name: str,
+) -> tuple[str | None, str]:
+    sync_prefix = f"    {impl_method_line}" if impl_method_line else ""
+    async_prefix = impl_method_line or ""
+
+    if not is_async:
+        sync_method_body = _build_wrapped_method_body(
+            call_expr_prefix,
+            return_transformer,
+            synchronized_types,
+            synchronizer_name,
+            current_target_module,
+            unwrap_code,
+            is_async=False,
+            prefix=sync_prefix,
+        )
+        return None, sync_method_body
+
+    if is_async_gen:
+        async_replacement = None
+        sync_replacement = None
+        if method_type == "instance":
+            async_replacement = "wrapper_instance."
+        elif method_type == "classmethod":
+            async_replacement = "wrapper_class."
+        elif method_type == "staticmethod":
+            async_replacement = f"{class_name}()._"
+            sync_replacement = f"{class_name}()._"
+
+        return _build_generator_method_bodies(
+            method_type,
+            call_expr_prefix,
+            return_transformer,
+            synchronized_types,
+            current_target_module,
+            unwrap_code,
+            wrap_expr_async_replacement=async_replacement,
+            wrap_expr_sync_replacement=sync_replacement,
+            prefix=async_prefix,
+        )
+
+    aio_body = _build_wrapped_method_body(
+        call_expr_prefix,
+        return_transformer,
+        synchronized_types,
+        synchronizer_name,
+        current_target_module,
+        unwrap_code,
+        is_async=True,
+        prefix=async_prefix,
+    )
+    sync_method_body = _build_wrapped_method_body(
+        call_expr_prefix,
+        return_transformer,
+        synchronized_types,
+        synchronizer_name,
+        current_target_module,
+        unwrap_code,
+        is_async=False,
+        prefix=sync_prefix,
+    )
+    return aio_body, sync_method_body
+
+
 def compile_method_wrapper(
     method: types.FunctionType,
     method_name: str,
@@ -130,263 +301,23 @@ def compile_method_wrapper(
     )
     call_expr_prefix = method_plan.call_expr_prefix
 
-    # Build both sync and async bodies (or just sync for non-async methods)
-    # For instance methods, these will be wrapper functions
-    # For classmethods/staticmethods, we'll handle separately
-    # Initialize variables
-    aio_body = None
-    sync_method_body = ""
-
+    impl_method_line = None
     if method_type == "instance":
-        if not is_async:
-            # For sync instance methods, just call directly without synchronizer
-            sync_call_expr = call_expr_prefix
-            sync_method_body = _build_call_with_wrap(
-                sync_call_expr,
-                return_transformer,
-                synchronized_types,
-                synchronizer_name,
-                current_target_module,
-                indent="    ",
-                is_async=False,
-            )
-            # Add impl_method reference
-            impl_method_line = f"    impl_method = {origin_module}.{class_name}.{method_name}"
-            if unwrap_code:
-                sync_method_body = impl_method_line + "\n" + unwrap_code + "\n" + sync_method_body
-            else:
-                sync_method_body = impl_method_line + "\n" + sync_method_body
-            aio_body = None  # No async version for sync methods
-        elif is_async_gen:
-            # For async generator instance methods
-            gen_call = call_expr_prefix
-            wrap_expr_raw = return_transformer.wrap_expr(synchronized_types, current_target_module, "gen")
-            # Replace self with wrapper_instance for async wrapper function
-            wrap_expr = wrap_expr_raw.replace("self.", "wrapper_instance.")
-            impl_method_line = f"impl_method = {origin_module}.{class_name}.{method_name}"
-            unwrap_lines = f"\n{unwrap_code}\n" if unwrap_code else "\n"
-            aio_body = (
-                f"    {impl_method_line}{unwrap_lines}"
-                f"    gen = {gen_call}\n"
-                f"    _wrapped = {wrap_expr}\n"
-                f"    _sent = None\n"
-                f"    try:\n"
-                f"        while True:\n"
-                f"            try:\n"
-                f"                _item = await _wrapped.asend(_sent)\n"
-                f"                _sent = yield _item\n"
-                f"            except StopAsyncIteration:\n"
-                f"                break\n"
-                f"    finally:\n"
-                f"        await _wrapped.aclose()"
-            )
-            # For sync version, use yield from for efficiency
-            sync_wrap_expr_raw = return_transformer.wrap_expr(
-                synchronized_types, current_target_module, "gen", is_async=False
-            )
-            # Replace self with self for sync method (will be replaced later when putting in method body)
-            sync_wrap_expr = sync_wrap_expr_raw
-            impl_method_line_sync = f"    {impl_method_line}"
-            if unwrap_code:
-                sync_method_body = (
-                    f"{impl_method_line_sync}\n{unwrap_code}\n    gen = {gen_call}\n    yield from {sync_wrap_expr}"
-                )
-            else:
-                sync_method_body = f"{impl_method_line_sync}\n    gen = {gen_call}\n    yield from {sync_wrap_expr}"
-        else:
-            # For instance methods returning Awaitable[T] (from normalized async def)
-            # The _build_call_with_wrap will handle the synchronizer wrapping
-            impl_method_line = f"    impl_method = {origin_module}.{class_name}.{method_name}"
+        impl_method_line = f"impl_method = {origin_module}.{class_name}.{method_name}"
 
-            aio_body = _build_call_with_wrap(
-                call_expr_prefix,
-                return_transformer,
-                synchronized_types,
-                synchronizer_name,
-                current_target_module,
-                indent="    ",
-                is_async=True,
-            )
-            if unwrap_code:
-                aio_body = impl_method_line + "\n" + unwrap_code + "\n" + aio_body
-            else:
-                aio_body = impl_method_line + "\n" + aio_body
-
-            sync_method_body = _build_call_with_wrap(
-                call_expr_prefix,
-                return_transformer,
-                synchronized_types,
-                synchronizer_name,
-                current_target_module,
-                indent="    ",
-                is_async=False,
-            )
-            if unwrap_code:
-                sync_method_body = impl_method_line + "\n" + unwrap_code + "\n" + sync_method_body
-            else:
-                sync_method_body = impl_method_line + "\n" + sync_method_body
-    elif method_type == "classmethod":
-        # For classmethod wrapper functions
-        if not is_async:
-            # Sync classmethod - just call directly
-            sync_call_expr = call_expr_prefix
-            sync_method_body = _build_call_with_wrap(
-                sync_call_expr,
-                return_transformer,
-                synchronized_types,
-                synchronizer_name,
-                current_target_module,
-                indent="    ",
-                is_async=False,
-            )
-            if unwrap_code:
-                sync_method_body = unwrap_code + "\n" + sync_method_body
-            aio_body = None
-        elif is_async_gen:
-            # Async generator classmethod
-            gen_call = call_expr_prefix
-            wrap_expr_raw = return_transformer.wrap_expr(synchronized_types, current_target_module, "gen")
-            # Replace self with wrapper_class for async wrapper function
-            wrap_expr = wrap_expr_raw.replace("self.", "wrapper_class.")
-            unwrap_lines = f"{unwrap_code}\n    " if unwrap_code else ""
-            aio_body = (
-                f"    {unwrap_lines}gen = {gen_call}\n"
-                f"    _wrapped = {wrap_expr}\n"
-                f"    _sent = None\n"
-                f"    try:\n"
-                f"        while True:\n"
-                f"            try:\n"
-                f"                _item = await _wrapped.asend(_sent)\n"
-                f"                _sent = yield _item\n"
-                f"            except StopAsyncIteration:\n"
-                f"                break\n"
-                f"    finally:\n"
-                f"        await _wrapped.aclose()"
-            )
-            sync_wrap_expr_raw = return_transformer.wrap_expr(
-                synchronized_types, current_target_module, "gen", is_async=False
-            )
-            # Will be replaced with cls when putting in method body
-            sync_wrap_expr = sync_wrap_expr_raw
-            if unwrap_code:
-                sync_method_body = f"{unwrap_code}\n    gen = {gen_call}\n    yield from {sync_wrap_expr}"
-            else:
-                sync_method_body = f"    gen = {gen_call}\n    yield from {sync_wrap_expr}"
-        else:
-            # For classmethods returning Awaitable[T] (from normalized async def)
-            # The _build_call_with_wrap will handle the synchronizer wrapping
-            aio_body = _build_call_with_wrap(
-                call_expr_prefix,
-                return_transformer,
-                synchronized_types,
-                synchronizer_name,
-                current_target_module,
-                indent="    ",
-                is_async=True,
-            )
-            if unwrap_code:
-                aio_body = unwrap_code + "\n" + aio_body
-
-            sync_method_body = _build_call_with_wrap(
-                call_expr_prefix,
-                return_transformer,
-                synchronized_types,
-                synchronizer_name,
-                current_target_module,
-                indent="    ",
-                is_async=False,
-            )
-            if unwrap_code:
-                sync_method_body = unwrap_code + "\n" + sync_method_body
-    elif method_type == "staticmethod":
-        # For staticmethod wrapper functions
-        if not is_async:
-            # Sync staticmethod - just call directly
-            sync_call_expr = call_expr_prefix
-            sync_method_body = _build_call_with_wrap(
-                sync_call_expr,
-                return_transformer,
-                synchronized_types,
-                synchronizer_name,
-                current_target_module,
-                indent="    ",
-                is_async=False,
-            )
-            if unwrap_code:
-                sync_method_body = unwrap_code + "\n" + sync_method_body
-            aio_body = None
-        elif is_async_gen:
-            # Async generator staticmethod
-            gen_call = call_expr_prefix
-            wrap_expr_raw = return_transformer.wrap_expr(synchronized_types, current_target_module, "gen")
-            # For staticmethods, helpers are instance methods but we don't have self
-            # We need to create a temporary instance or access via class
-            # For now, use the class name to access static helper - but helpers are instance methods
-            # Actually, for staticmethods we might need to use a different pattern
-            # Let's use the class to call as a bound method: {class_name}()._wrap_async_gen_...
-            # Or better: access via a temporary instance
-            # For now, replace self with a pattern that creates temp instance
-            if "self." in wrap_expr_raw:
-                # Extract helper name and create expression that uses class to create instance
-                # Actually, simpler: use the class directly and create instance on the fly
-                # Or even simpler: helpers should be accessible via the class itself if they're @staticmethod
-                # But they're instance methods... Let's use {class_name}()._helper_name pattern
-                wrap_expr = wrap_expr_raw.replace("self.", f"{class_name}()._").replace("_(", "(")
-            else:
-                wrap_expr = wrap_expr_raw
-            unwrap_lines = f"{unwrap_code}\n    " if unwrap_code else ""
-            aio_body = (
-                f"    {unwrap_lines}gen = {gen_call}\n"
-                f"    _wrapped = {wrap_expr}\n"
-                f"    _sent = None\n"
-                f"    try:\n"
-                f"        while True:\n"
-                f"            try:\n"
-                f"                _item = await _wrapped.asend(_sent)\n"
-                f"                _sent = yield _item\n"
-                f"            except StopAsyncIteration:\n"
-                f"                break\n"
-                f"    finally:\n"
-                f"        await _wrapped.aclose()"
-            )
-            sync_wrap_expr_raw = return_transformer.wrap_expr(
-                synchronized_types, current_target_module, "gen", is_async=False
-            )
-            # For sync staticmethod, replace self when putting in method body
-            if "self." in sync_wrap_expr_raw:
-                sync_wrap_expr = sync_wrap_expr_raw.replace("self.", f"{class_name}()._").replace("_(", "(")
-            else:
-                sync_wrap_expr = sync_wrap_expr_raw
-            if unwrap_code:
-                sync_method_body = f"{unwrap_code}\n    gen = {gen_call}\n    yield from {sync_wrap_expr}"
-            else:
-                sync_method_body = f"    gen = {gen_call}\n    yield from {sync_wrap_expr}"
-        else:
-            # For staticmethods returning Awaitable[T] (from normalized async def)
-            # The _build_call_with_wrap will handle the synchronizer wrapping
-            aio_body = _build_call_with_wrap(
-                call_expr_prefix,
-                return_transformer,
-                synchronized_types,
-                synchronizer_name,
-                current_target_module,
-                indent="    ",
-                is_async=True,
-            )
-            if unwrap_code:
-                aio_body = unwrap_code + "\n" + aio_body
-
-            sync_method_body = _build_call_with_wrap(
-                call_expr_prefix,
-                return_transformer,
-                synchronized_types,
-                synchronizer_name,
-                current_target_module,
-                indent="    ",
-                is_async=False,
-            )
-            if unwrap_code:
-                sync_method_body = unwrap_code + "\n" + sync_method_body
+    aio_body, sync_method_body = _build_method_bodies(
+        method_type,
+        call_expr_prefix,
+        return_transformer,
+        synchronized_types,
+        synchronizer_name,
+        current_target_module,
+        unwrap_code,
+        is_async=is_async,
+        is_async_gen=is_async_gen,
+        impl_method_line=impl_method_line,
+        class_name=class_name,
+    )
 
     # Generate async wrapper methods inside the class (not module-level functions)
     # This allows them to use Self and class generics properly
