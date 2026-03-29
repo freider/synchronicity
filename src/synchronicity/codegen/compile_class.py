@@ -150,11 +150,13 @@ def compile_method_wrapper(
             return_transformer = AsyncGeneratorTransformer(return_transformer.item_transformer, send_type_str=None)
 
     # Import here to avoid circular imports
-    from .type_transformer import AwaitableTransformer, CoroutineTransformer
+    from .type_transformer import AsyncContextManagerTransformer, AwaitableTransformer, CoroutineTransformer
 
     # Determine if this needs async/sync wrappers based on the transformer type
     # After normalization, async def methods have AwaitableTransformer
-    is_async = is_async_gen or isinstance(return_transformer, (AwaitableTransformer, CoroutineTransformer))
+    is_async = is_async_gen or isinstance(
+        return_transformer, (AwaitableTransformer, CoroutineTransformer, AsyncContextManagerTransformer)
+    )
 
     # Format return types
     sync_return_str, async_return_str = _format_return_annotation(
@@ -244,19 +246,29 @@ def compile_method_wrapper(
             else:
                 sync_method_body = f"{impl_method_line_sync}\n    gen = {gen_call}\n    yield from {sync_wrap_expr}"
         else:
-            # For instance methods returning Awaitable[T] (from normalized async def)
-            # The _build_call_with_wrap will handle the synchronizer wrapping
             impl_method_line = f"    impl_method = {origin_module}.{class_name}.{method_name}"
-
-            aio_body = _build_call_with_wrap(
-                call_expr_prefix,
-                return_transformer,
-                synchronized_types,
-                synchronizer_name,
-                current_target_module,
-                indent="    ",
-                is_async=True,
-            )
+            if isinstance(return_transformer, AsyncContextManagerTransformer):
+                aio_body = _build_call_with_wrap(
+                    call_expr_prefix,
+                    return_transformer,
+                    synchronized_types,
+                    synchronizer_name,
+                    current_target_module,
+                    indent="    ",
+                    is_async=False,
+                )
+            else:
+                # For instance methods returning Awaitable[T] (from normalized async def)
+                # The _build_call_with_wrap will handle the synchronizer wrapping
+                aio_body = _build_call_with_wrap(
+                    call_expr_prefix,
+                    return_transformer,
+                    synchronized_types,
+                    synchronizer_name,
+                    current_target_module,
+                    indent="    ",
+                    is_async=True,
+                )
             if unwrap_code:
                 aio_body = impl_method_line + "\n" + unwrap_code + "\n" + aio_body
             else:
@@ -323,17 +335,28 @@ def compile_method_wrapper(
             else:
                 sync_method_body = f"    gen = {gen_call}\n    yield from {sync_wrap_expr}"
         else:
-            # For classmethods returning Awaitable[T] (from normalized async def)
-            # The _build_call_with_wrap will handle the synchronizer wrapping
-            aio_body = _build_call_with_wrap(
-                call_expr_prefix,
-                return_transformer,
-                synchronized_types,
-                synchronizer_name,
-                current_target_module,
-                indent="    ",
-                is_async=True,
-            )
+            if isinstance(return_transformer, AsyncContextManagerTransformer):
+                aio_body = _build_call_with_wrap(
+                    call_expr_prefix,
+                    return_transformer,
+                    synchronized_types,
+                    synchronizer_name,
+                    current_target_module,
+                    indent="    ",
+                    is_async=False,
+                )
+            else:
+                # For classmethods returning Awaitable[T] (from normalized async def)
+                # The _build_call_with_wrap will handle the synchronizer wrapping
+                aio_body = _build_call_with_wrap(
+                    call_expr_prefix,
+                    return_transformer,
+                    synchronized_types,
+                    synchronizer_name,
+                    current_target_module,
+                    indent="    ",
+                    is_async=True,
+                )
             if unwrap_code:
                 aio_body = unwrap_code + "\n" + aio_body
 
@@ -412,17 +435,28 @@ def compile_method_wrapper(
             else:
                 sync_method_body = f"    gen = {gen_call}\n    yield from {sync_wrap_expr}"
         else:
-            # For staticmethods returning Awaitable[T] (from normalized async def)
-            # The _build_call_with_wrap will handle the synchronizer wrapping
-            aio_body = _build_call_with_wrap(
-                call_expr_prefix,
-                return_transformer,
-                synchronized_types,
-                synchronizer_name,
-                current_target_module,
-                indent="    ",
-                is_async=True,
-            )
+            if isinstance(return_transformer, AsyncContextManagerTransformer):
+                aio_body = _build_call_with_wrap(
+                    call_expr_prefix,
+                    return_transformer,
+                    synchronized_types,
+                    synchronizer_name,
+                    current_target_module,
+                    indent="    ",
+                    is_async=False,
+                )
+            else:
+                # For staticmethods returning Awaitable[T] (from normalized async def)
+                # The _build_call_with_wrap will handle the synchronizer wrapping
+                aio_body = _build_call_with_wrap(
+                    call_expr_prefix,
+                    return_transformer,
+                    synchronized_types,
+                    synchronizer_name,
+                    current_target_module,
+                    indent="    ",
+                    is_async=True,
+                )
             if unwrap_code:
                 aio_body = unwrap_code + "\n" + aio_body
 
@@ -461,9 +495,12 @@ def compile_method_wrapper(
                 )
                 for line in aio_body_lines
             )
-            aio_wrapper_method = (
-                f"    async def {aio_method_name}(self, {param_str}){async_return_str}:\n{aio_body_indented}"
+            aio_def_prefix = (
+                f"    def {aio_method_name}(self, {param_str}){async_return_str}:\n"
+                if isinstance(return_transformer, AsyncContextManagerTransformer)
+                else f"    async def {aio_method_name}(self, {param_str}){async_return_str}:\n"
             )
+            aio_wrapper_method = f"{aio_def_prefix}{aio_body_indented}"
             wrapper_functions_code = aio_wrapper_method
         else:
             # Sync-only method: no async wrapper needed
@@ -489,11 +526,14 @@ def compile_method_wrapper(
             )
             # Add @classmethod decorator to the async wrapper
             # No type annotation needed on cls - it's inferred from context
-            aio_wrapper_method = (
+            aio_def_prefix = (
                 f"    @classmethod\n"
+                f"    def {aio_method_name}(cls, {param_str}){async_return_str}:\n"
+                if isinstance(return_transformer, AsyncContextManagerTransformer)
+                else f"    @classmethod\n"
                 f"    async def {aio_method_name}(cls, {param_str}){async_return_str}:\n"
-                f"{aio_body_indented}"
             )
+            aio_wrapper_method = f"{aio_def_prefix}{aio_body_indented}"
             wrapper_functions_code = aio_wrapper_method
         else:
             # Sync-only classmethod: no async wrapper needed
@@ -516,11 +556,14 @@ def compile_method_wrapper(
                 for line in aio_body_lines
             )
             # Add @staticmethod decorator to the async wrapper
-            aio_wrapper_method = (
+            aio_def_prefix = (
                 f"    @staticmethod\n"
+                f"    def {aio_method_name}({param_str}){async_return_str}:\n"
+                if isinstance(return_transformer, AsyncContextManagerTransformer)
+                else f"    @staticmethod\n"
                 f"    async def {aio_method_name}({param_str}){async_return_str}:\n"
-                f"{aio_body_indented}"
             )
+            aio_wrapper_method = f"{aio_def_prefix}{aio_body_indented}"
             wrapper_functions_code = aio_wrapper_method
         else:
             # Sync-only staticmethod: no async wrapper needed
@@ -880,10 +923,12 @@ def compile_class(
         aenter_return_annotation = aenter_annotations.get("return", aenter_sig.return_annotation)
         aenter_return_annotation = _normalize_async_annotation(aenter_method, aenter_return_annotation)
         aenter_transformer_annotation = aenter_return_annotation
-        if aenter_return_annotation is typing.Awaitable[typing.Self]:
-            aenter_transformer_annotation = typing.Awaitable[cls]
-        elif aenter_return_annotation is typing.Self:
+        aenter_origin = typing.get_origin(aenter_return_annotation)
+        aenter_args = typing.get_args(aenter_return_annotation)
+        if aenter_return_annotation is typing.Self:
             aenter_transformer_annotation = cls
+        elif aenter_origin is not None and aenter_args and aenter_args[0] is typing.Self:
+            aenter_transformer_annotation = aenter_origin[cls]
         aenter_transformer = create_transformer(aenter_transformer_annotation, synchronized_types_with_self)
         aenter_sync_return_str, aenter_async_return_str = _format_return_annotation(
             aenter_transformer, synchronized_types_with_self, synchronizer_name, current_target_module
@@ -1113,20 +1158,24 @@ def compile_class(
 {init_unwrap_code}
         super().__init__({init_call})
         # Update to more specific derived type
-        self._impl_instance = {origin_module}.{cls.__name__}({init_call})"""
+        self._impl_instance = {origin_module}.{cls.__name__}({init_call})
+        self._instance_cache[id(self._impl_instance)] = self"""
         else:
             init_method = f"""    def __init__({init_params}):
         super().__init__({init_call})
         # Update to more specific derived type
-        self._impl_instance = {origin_module}.{cls.__name__}({init_call})"""
+        self._impl_instance = {origin_module}.{cls.__name__}({init_call})
+        self._instance_cache[id(self._impl_instance)] = self"""
     else:
         if init_unwrap_code:
             init_method = f"""    def __init__({init_params}):
 {init_unwrap_code}
-        self._impl_instance = {origin_module}.{cls.__name__}({init_call})"""
+        self._impl_instance = {origin_module}.{cls.__name__}({init_call})
+        self._instance_cache[id(self._impl_instance)] = self"""
         else:
             init_method = f"""    def __init__({init_params}):
-        self._impl_instance = {origin_module}.{cls.__name__}({init_call})"""
+        self._impl_instance = {origin_module}.{cls.__name__}({init_call})
+        self._instance_cache[id(self._impl_instance)] = self"""
 
     # Build sections list, only including non-empty sections
     sections = [init_method]

@@ -272,7 +272,8 @@ def compile_module(
 
     cross_module_imports_str = "\n".join(cross_module_import_strs) if cross_module_import_strs else ""
 
-    header = f"""import typing
+    header = f"""import types
+import typing
 
 {imports}
 

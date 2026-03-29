@@ -229,8 +229,8 @@ class TestAsyncGenerators:
         assert "_run_function_sync" not in generated_code
 
         # Verify it generates inline helper functions for generators with send() support
-        assert "async def _wrap_async_gen" in generated_code  # Async helper
-        assert "def _wrap_async_gen" in generated_code  # Sync helper (note: both contain this string)
+        assert "async def " in generated_code and "_wrap_async_gen" in generated_code  # Async helper
+        assert "def " in generated_code and "_wrap_async_gen" in generated_code  # Sync helper also exists
         assert "_wrapped.asend(_sent)" in generated_code  # Async helper uses asend() for two-way generators
         # Sync helper uses yield from when no wrapping needed (more efficient, still forwards send())
         assert "yield from get_synchronizer" in generated_code or "_wrapped.send(_sent)" in generated_code
@@ -239,7 +239,7 @@ class TestAsyncGenerators:
         assert "_sent = yield _item" in generated_code  # Async helper captures sent values
         assert "gen = impl_function" in generated_code
         # Functions iterate over helpers (can't return generators from async functions)
-        assert "yield from _wrap_async_gen" in generated_code  # Sync uses yield from (no self.)
+        assert "yield from " in generated_code and "_wrap_async_gen" in generated_code  # Sync uses yield from
         assert "await _wrapped.asend(_sent)" in generated_code  # Async uses asend() to forward send values
 
         # Verify return type annotations for generators
@@ -310,7 +310,7 @@ class TestAsyncGenerators:
             ' -> "typing.Generator[Person, None, None]"' in generated_code
         ), "Sync version should quote entire Generator type when it contains wrapped types"
         assert (
-            ' -> "typing.AsyncGenerator[Person]"' in generated_code
+            ' -> "typing.AsyncGenerator[Person, None]"' in generated_code
         ), "Async version should quote entire AsyncGenerator type when it contains wrapped types"
 
         # Should NOT have individually quoted type arguments inside the generic
@@ -355,7 +355,7 @@ class TestAsyncGenerators:
             ' -> "typing.Generator[list[Person], None, None]"' in generated_code
         ), "Sync version should quote entire Generator type when yield type contains wrapped types"
         assert (
-            ' -> "typing.AsyncGenerator[list[Person]]"' in generated_code
+            ' -> "typing.AsyncGenerator[list[Person], None]"' in generated_code
         ), "Async version should quote entire AsyncGenerator type when yield type contains wrapped types"
 
     def test_declared_bare_iterator(self):
@@ -368,7 +368,7 @@ class TestAsyncGenerators:
         src = compile_function(gen, "test_module", "s", {})
         print(src)
         # Since this is actually a generator (has yield), it should be treated as AsyncGenerator
-        assert 'async def __gen_aio() -> "typing.AsyncGenerator[typing.Any]"' in src
+        assert 'async def __gen_aio() -> "typing.AsyncGenerator[typing.Any, None]"' in src
         assert "@wrapped_function" in src
         assert 'def gen() -> "typing.Generator[typing.Any, None, None]"' in src
 

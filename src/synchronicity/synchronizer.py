@@ -81,6 +81,15 @@ def _wrapped_from_impl(
     return wrapper
 
 
+def _register_wrapper_instance(
+    wrapper_instance: WrapperClassProtocol,
+    impl_instance: typing.Any,
+    cache: typing.Any,
+) -> None:
+    """Register an already-created wrapper instance in the identity cache."""
+    cache[id(impl_instance)] = wrapper_instance
+
+
 class Synchronizer:
     def __init__(self, name: Optional[str] = None):
         self._name = name
@@ -345,7 +354,7 @@ class Synchronizer:
             # Ensure the underlying generator is properly closed
             await gen.aclose()
 
-    def _run_iterator_sync(self, async_iter: typing.AsyncIterator[T]) -> typing.Generator[T, None]:
+    def _run_iterator_sync(self, async_iter: typing.AsyncIterator[T]) -> typing.Generator[T, None, None]:
         """Run an async iterator in sync mode.
 
         Unlike generators, iterators don't have asend()/aclose(), just __aiter__() and __anext__().

@@ -343,7 +343,7 @@ class TestGeneratorTransformer:
 
         yield_transformer = IdentityTransformer(int)
         transformer = AsyncGeneratorTransformer(yield_transformer, send_type_str=None)
-        assert transformer.wrapped_type(sync, "test_module", is_async=True) == "typing.AsyncGenerator[int]"
+        assert transformer.wrapped_type(sync, "test_module", is_async=True) == "typing.AsyncGenerator[int, None]"
         assert transformer.wrapped_type(sync, "test_module", is_async=False) == "typing.Generator[int, None, None]"
 
     def test_wrapped_type_sync_generator(self, sync):

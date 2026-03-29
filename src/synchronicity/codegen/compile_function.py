@@ -19,6 +19,7 @@ from .signature_utils import (
     is_async_generator,
 )
 from .type_transformer import (
+    AsyncContextManagerTransformer,
     AsyncGeneratorTransformer,
     AsyncIteratorTransformer,
     create_transformer,
@@ -48,6 +49,12 @@ def compile_function(
     """
     origin_module = f.__module__
     current_target_module = target_module
+
+    def _rename_helper_refs(code: str, helper_names: list[str]) -> str:
+        """Scope module-level helper names to this function."""
+        for helper_name in helper_names:
+            code = code.replace(helper_name, f"__{f.__name__}{helper_name}")
+        return code
 
     # Resolve all type annotations (with fallback for TYPE_CHECKING imports)
     annotations = _safe_get_annotations(f, globals_dict)
@@ -92,11 +99,13 @@ def compile_function(
             return_transformer = AsyncGeneratorTransformer(return_transformer.item_transformer, send_type_str=None)
 
     # Import here to avoid circular imports
-    from .type_transformer import AwaitableTransformer, CoroutineTransformer
+    from .type_transformer import AsyncContextManagerTransformer, AwaitableTransformer, CoroutineTransformer
 
     # Determine if this needs async/sync wrappers based on the transformer type
     # After normalization, async def functions have AwaitableTransformer
-    needs_async_wrapper = is_async_gen or isinstance(return_transformer, (AwaitableTransformer, CoroutineTransformer))
+    needs_async_wrapper = is_async_gen or isinstance(
+        return_transformer, (AwaitableTransformer, CoroutineTransformer, AsyncContextManagerTransformer)
+    )
 
     # For non-async functions, generate simple wrapper without @wrapped_function decorator
     if not needs_async_wrapper:
@@ -121,9 +130,12 @@ def compile_function(
                         continue
                     cleaned_lines.append(line)
                 cleaned_helpers[name] = "\n".join(cleaned_lines)
+            helper_names = list(cleaned_helpers.keys())
             helpers_code = "\n".join(cleaned_helpers.values())
+            helpers_code = _rename_helper_refs(helpers_code, helper_names)
         else:
             helpers_code = ""
+            helper_names = []
 
         # Build function body with wrapping (sync context, so is_async=False)
         function_body = _build_call_with_wrap(
@@ -147,6 +159,7 @@ def compile_function(
         # Generate simple function (no decorator, no wrapper class) with helpers if needed
         function_code = f"""def {f.__name__}({param_str}){sync_return_str}:
 {function_body}"""
+        function_code = _rename_helper_refs(function_code, helper_names)
 
         if helpers_code:
             return f"{helpers_code}\n\n{function_code}"
@@ -172,6 +185,16 @@ def compile_function(
             synchronized_types, current_target_module, synchronizer_name, indent="    "
         )
         inline_helpers_dict.update(inner_helpers)
+    elif isinstance(return_transformer, AsyncContextManagerTransformer):
+        inline_helpers_dict.update(
+            return_transformer.get_wrapper_helpers(
+                synchronized_types,
+                current_target_module,
+                synchronizer_name,
+                indent="    ",
+                helper_name_hint=f.__name__,
+            )
+        )
     # Strip @staticmethod decorators from helpers for module-level functions
     if inline_helpers_dict:
         # Remove @staticmethod and adjust indentation for module-level functions
@@ -189,9 +212,12 @@ def compile_function(
                 else:
                     cleaned_lines.append(line)
             cleaned_helpers[name] = "\n".join(cleaned_lines)
-        helpers_code = "\n".join(cleaned_helpers.values())
+        helper_names = list(cleaned_helpers.keys())
+        helpers_code = "\n".join(dict.fromkeys(cleaned_helpers.values()))
+        helpers_code = _rename_helper_refs(helpers_code, helper_names)
     else:
         helpers_code = ""
+        helper_names = []
 
     # Generate async wrapper function name (double underscore prefix pattern)
     aio_function_name = f"__{f.__name__}_aio"
@@ -202,6 +228,7 @@ def compile_function(
     if unwrap_code:
         aio_unwrap_section += "\n" + unwrap_code
 
+    aio_def_keyword = "async def"
     if is_async_gen:
         # For async generators, manually iterate with asend() to support two-way generators
         # Wrap in try/finally to ensure proper cleanup on aclose()
@@ -222,6 +249,15 @@ def compile_function(
             f"    finally:\n"
             f"        await _wrapped.aclose()"
         )
+    elif isinstance(return_transformer, AsyncContextManagerTransformer):
+        wrap_expr_raw = return_transformer.wrap_expr(
+            synchronized_types,
+            current_target_module,
+            f"impl_function({call_args_str})",
+            is_async=True,
+        )
+        aio_body = f"    return {wrap_expr_raw.replace('self.', '')}"
+        aio_def_keyword = "def"
     else:
         # For functions returning Awaitable[T] (from normalized async def)
         # The _build_call_with_wrap will handle the synchronizer wrapping
@@ -237,10 +273,11 @@ def compile_function(
         )
 
     # Generate async wrapper function
-    async_wrapper_code = f"""async def {aio_function_name}({param_str}){async_return_str}:
+    async_wrapper_code = f"""{aio_def_keyword} {aio_function_name}({param_str}){async_return_str}:
 {aio_unwrap_section}
 {aio_body}
 """
+    async_wrapper_code = _rename_helper_refs(async_wrapper_code, helper_names)
 
     # Build sync function body
     sync_impl_ref = f"    impl_function = {origin_module}.{f.__name__}"
@@ -276,6 +313,7 @@ def {f.__name__}({param_str}){sync_return_str}:
 {sync_unwrap_section}
 {sync_function_body}
 """
+    sync_function_code = _rename_helper_refs(sync_function_code, helper_names)
 
     # Combine helpers, async wrapper, and sync function
     if helpers_code:

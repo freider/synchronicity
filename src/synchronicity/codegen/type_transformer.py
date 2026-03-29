@@ -417,10 +417,8 @@ class AsyncGeneratorTransformer(TypeTransformer):
 
         if is_async:
             # Async context: return AsyncGenerator[YieldType, SendType]
-            if self.send_type_str is None:
-                return f"typing.AsyncGenerator[{yield_type_str}]"
-            else:
-                return f"typing.AsyncGenerator[{yield_type_str}, {self.send_type_str}]"
+            send_type_for_async = self.send_type_str if self.send_type_str is not None else "None"
+            return f"typing.AsyncGenerator[{yield_type_str}, {send_type_for_async}]"
         else:
             # Sync context: return Generator[YieldType, SendType, None]
             # Preserve send type to support two-way generators in sync context
@@ -719,8 +717,8 @@ class AsyncIteratorTransformer(TypeTransformer):
             wrap_expr = wrap_expr.replace("self.", "")
 
             # Generate a lambda-style wrapper function
-            helper_func = f"""def {helper_name}(_item):
-    return {wrap_expr}"""
+            helper_func = f"""{indent}def {helper_name}(_item):
+{indent}    return {wrap_expr}"""
 
             helpers[helper_name] = helper_func
 
@@ -807,8 +805,8 @@ class AsyncIterableTransformer(TypeTransformer):
             item_wrap_expr = item_wrap_expr.replace("self.", "")
 
             # Generate a lambda-style wrapper function
-            helper_func = f"""def {helper_name}(_item):
-    return {item_wrap_expr}"""
+            helper_func = f"""{indent}def {helper_name}(_item):
+{indent}    return {item_wrap_expr}"""
 
             helpers[helper_name] = helper_func
 
@@ -854,9 +852,17 @@ class AsyncContextManagerTransformer(TypeTransformer):
         """Async context managers always need wrapping to expose sync/async entry."""
         return True
 
-    def _get_helper_name(self, synchronized_types: dict[type, tuple[str, str]], target_module: str) -> str:
+    def _get_helper_name(
+        self,
+        synchronized_types: dict[type, tuple[str, str]],
+        target_module: str,
+        *,
+        helper_name_hint: str | None = None,
+    ) -> str:
         value_type_str = self.value_transformer.wrapped_type(synchronized_types, target_module)
         sanitized = value_type_str.replace("[", "_").replace("]", "").replace(".", "_").replace(", ", "_")
+        if helper_name_hint:
+            return f"_wrap_async_cm_value_{helper_name_hint}_{sanitized}"
         return f"_wrap_async_cm_value_{sanitized}"
 
     def get_wrapper_helpers(
@@ -865,6 +871,7 @@ class AsyncContextManagerTransformer(TypeTransformer):
         target_module: str,
         synchronizer_name: str,
         indent: str = "    ",
+        helper_name_hint: str | None = None,
     ) -> dict[str, str]:
         helpers = {}
         helpers.update(
@@ -874,11 +881,13 @@ class AsyncContextManagerTransformer(TypeTransformer):
         if not self.value_transformer.needs_translation():
             return helpers
 
-        helper_name = self._get_helper_name(synchronized_types, target_module)
+        helper_name = self._get_helper_name(
+            synchronized_types, target_module, helper_name_hint=helper_name_hint
+        )
         wrap_expr = self.value_transformer.wrap_expr(synchronized_types, target_module, "_value", is_async=True)
         wrap_expr = wrap_expr.replace("self.", "")
-        helpers[helper_name] = f"""def {helper_name}(_value):
-    return {wrap_expr}"""
+        helpers[helper_name] = f"""{indent}def {helper_name}(_value):
+{indent}    return {wrap_expr}"""
         return helpers
 
 
