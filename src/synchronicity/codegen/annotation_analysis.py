@@ -71,6 +71,7 @@ class MethodPlan:
     method_type: str
     call_expr_prefix: str
     dummy_param_str: str
+    public_signature_param_str: str
     decorator_func: str
     skip_first_param: bool
 
@@ -319,7 +320,7 @@ def _analyze_callable(
     )
 
 
-def _plan_method_wrapper(
+def _build_method_plan(
     method_name: str,
     method_type: str,
     class_name: str,
@@ -352,10 +353,18 @@ def _plan_method_wrapper(
         else:
             dummy_param_str = f'cls: type["{class_name}"]'
 
+    if method_type == "classmethod":
+        public_signature_param_str = f"cls, {param_str}" if param_str else "cls"
+    elif method_type == "instance":
+        public_signature_param_str = f"self, {param_str}" if param_str else "self"
+    else:
+        public_signature_param_str = dummy_param_str
+
     return MethodPlan(
         method_type=method_type,
         call_expr_prefix=call_expr_prefix,
         dummy_param_str=dummy_param_str,
+        public_signature_param_str=public_signature_param_str,
         decorator_func=decorator_func,
         skip_first_param=skip_first_param,
     )
