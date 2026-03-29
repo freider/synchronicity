@@ -6,7 +6,12 @@ import inspect
 import types
 import typing
 
-from .annotation_analysis import _analyze_callable_return, _contains_self_type, _safe_get_annotations
+from .annotation_analysis import (
+    _analyze_callable_return,
+    _contains_self_type,
+    _normalize_async_annotation,
+    _safe_get_annotations,
+)
 from .compile_utils import (
     _build_call_with_wrap,
     _format_return_annotation,
@@ -85,12 +90,12 @@ def compile_method_wrapper(
     # Get method signature
     sig = inspect.signature(method)
 
-    return_analysis = _prepare_callable_return_analysis(
+    return_analysis = _analyze_callable_return(
         method,
-        annotations,
         synchronized_types,
+        globals_dict,
     )
-    return_annotation = return_analysis.normalized_return_annotation
+    return_annotation = return_analysis.return_annotation
 
     # Check if typing.Self is used in any annotation
     uses_self_type = _contains_self_type(return_annotation) or any(
