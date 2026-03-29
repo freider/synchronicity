@@ -223,6 +223,126 @@ def _build_method_bodies(
     return aio_body, sync_method_body
 
 
+def _indent_method_body(body: str, *, receiver_replacement: str | None = None) -> str:
+    if receiver_replacement is not None:
+        if receiver_replacement == "self":
+            body = body.replace("wrapper_instance", "self")
+        elif receiver_replacement == "cls":
+            body = body.replace("wrapper_class", "cls")
+
+    method_body_lines = body.split("\n")
+    return "\n".join("        " + line.lstrip() if line.strip() else "" for line in method_body_lines).strip()
+
+
+def _render_async_wrapper_method(
+    method_type: str,
+    aio_method_name: str,
+    param_str: str,
+    async_return_str: str,
+    aio_body: str | None,
+) -> str:
+    if aio_body is None:
+        return ""
+
+    if method_type == "instance":
+        aio_body = aio_body.replace("wrapper_instance", "self")
+        aio_body_lines = aio_body.split("\n")
+        aio_body_indented = "\n".join(
+            (
+                "        " + line[4:]
+                if line.strip() and len(line) > 4 and line.startswith("    ")
+                else "        " + line.lstrip()
+                if line.strip()
+                else ""
+            )
+            for line in aio_body_lines
+        )
+        return f"    async def {aio_method_name}(self, {param_str}){async_return_str}:\n{aio_body_indented}"
+
+    if method_type == "classmethod":
+        aio_body = aio_body.replace("wrapper_class", "cls")
+        aio_body_lines = aio_body.split("\n")
+        aio_body_indented = "\n".join(
+            (
+                "        " + line[4:]
+                if line.strip() and len(line) > 4 and line.startswith("    ")
+                else "        " + line.lstrip()
+                if line.strip()
+                else ""
+            )
+            for line in aio_body_lines
+        )
+        return (
+            f"    @classmethod\n"
+            f"    async def {aio_method_name}(cls, {param_str}){async_return_str}:\n"
+            f"{aio_body_indented}"
+        )
+
+    if method_type == "staticmethod":
+        aio_body_lines = aio_body.split("\n")
+        aio_body_indented = "\n".join(
+            (
+                "        " + line[4:]
+                if line.strip() and len(line) > 4 and line.startswith("    ")
+                else "        " + line.lstrip()
+                if line.strip()
+                else ""
+            )
+            for line in aio_body_lines
+        )
+        return (
+            f"    @staticmethod\n"
+            f"    async def {aio_method_name}({param_str}){async_return_str}:\n"
+            f"{aio_body_indented}"
+        )
+
+    return ""
+
+
+def _render_sync_method(
+    method_name: str,
+    method_type: str,
+    method_plan,
+    sync_return_str: str,
+    sync_method_body: str,
+    aio_method_name: str,
+    aio_body: str | None,
+) -> str:
+    if aio_body is not None:
+        if method_type == "classmethod":
+            decorator_line = f"@{method_plan.decorator_func}({aio_method_name})\n    @classmethod"
+            method_body = _indent_method_body(sync_method_body, receiver_replacement="cls")
+        elif method_type == "staticmethod":
+            decorator_line = f"@{method_plan.decorator_func}({aio_method_name})\n    @staticmethod"
+            method_body = _indent_method_body(sync_method_body)
+        else:
+            decorator_line = f"@{method_plan.decorator_func}({aio_method_name})"
+            method_body = _indent_method_body(sync_method_body, receiver_replacement="self")
+    else:
+        if method_type == "classmethod":
+            decorator_line = "@classmethod"
+            method_body = _indent_method_body(sync_method_body, receiver_replacement="cls")
+        elif method_type == "staticmethod":
+            decorator_line = "@staticmethod"
+            method_body = _indent_method_body(sync_method_body)
+        else:
+            decorator_line = ""
+            method_body = _indent_method_body(sync_method_body, receiver_replacement="self")
+
+    if method_type in ("classmethod", "staticmethod"):
+        if method_type == "classmethod":
+            def_line = f"    def {method_name}({method_plan.public_signature_param_str}){sync_return_str}:"
+        else:
+            def_line = f"    def {method_name}({method_plan.dummy_param_str}){sync_return_str}:"
+    else:
+        def_line = f"    def {method_name}({method_plan.public_signature_param_str}){sync_return_str}:"
+
+    if decorator_line:
+        return f"    {decorator_line}\n{def_line}\n        {method_body}"
+
+    return f"{def_line}\n        {method_body}"
+
+
 def compile_method_wrapper(
     method: types.FunctionType,
     method_name: str,
@@ -235,6 +355,7 @@ def compile_method_wrapper(
     method_type: str = "instance",
     globals_dict: dict[str, typing.Any] | None = None,
     generic_typevars: dict[str, typing.TypeVar | typing.ParamSpec] | None = None,
+    callable_analysis=None,
 ) -> tuple[str, str]:
     """
     Compile a method wrapper class that provides both sync and async versions.
@@ -257,14 +378,15 @@ def compile_method_wrapper(
         - sync_method_code: The dummy method with descriptor decorator
     """
     # Resolve all type annotations (with fallback for TYPE_CHECKING imports)
-    callable_analysis = _analyze_callable(
-        method,
-        synchronized_types,
-        synchronizer_name,
-        current_target_module,
-        skip_first_param=method_type in ("instance", "classmethod"),
-        globals_dict=globals_dict,
-    )
+    if callable_analysis is None:
+        callable_analysis = _analyze_callable(
+            method,
+            synchronized_types,
+            synchronizer_name,
+            current_target_module,
+            skip_first_param=method_type in ("instance", "classmethod"),
+            globals_dict=globals_dict,
+        )
     annotations = callable_analysis.annotations
     sig = callable_analysis.signature
     return_annotation = callable_analysis.return_annotation
@@ -319,189 +441,23 @@ def compile_method_wrapper(
         class_name=class_name,
     )
 
-    # Generate async wrapper methods inside the class (not module-level functions)
-    # This allows them to use Self and class generics properly
-    # Use __{method_name}_aio naming pattern (double underscore prefix)
     aio_method_name = f"__{method_name}_aio"
-
-    if method_type == "instance":
-        if aio_body is not None:
-            # Async instance method: generate async method with self
-            # Replace wrapper_instance with self in the body
-            # aio_body is indented with 4 spaces, needs 8 spaces for method body
-            aio_body_with_self = aio_body.replace("wrapper_instance", "self")
-            aio_body_lines = aio_body_with_self.split("\n")
-            # Remove 4 spaces from start (base indent) and add 8 spaces, preserving relative indentation
-            aio_body_indented = "\n".join(
-                (
-                    "        " + line[4:]
-                    if line.strip() and len(line) > 4 and line.startswith("    ")
-                    else "        " + line.lstrip()
-                    if line.strip()
-                    else ""
-                )
-                for line in aio_body_lines
-            )
-            aio_wrapper_method = (
-                f"    async def {aio_method_name}(self, {param_str}){async_return_str}:\n{aio_body_indented}"
-            )
-            wrapper_functions_code = aio_wrapper_method
-        else:
-            # Sync-only method: no async wrapper needed
-            wrapper_functions_code = ""
-            aio_body = None
-    elif method_type == "classmethod":
-        if aio_body is not None:
-            # Async classmethod: generate async method with cls
-            # Replace wrapper_class with cls in the body
-            # aio_body is indented with 4 spaces, needs 8 spaces for method body
-            aio_body_with_cls = aio_body.replace("wrapper_class", "cls")
-            aio_body_lines = aio_body_with_cls.split("\n")
-            # Remove 4 spaces from start (base indent) and add 8 spaces, preserving relative indentation
-            aio_body_indented = "\n".join(
-                (
-                    "        " + line[4:]
-                    if line.strip() and len(line) > 4 and line.startswith("    ")
-                    else "        " + line.lstrip()
-                    if line.strip()
-                    else ""
-                )
-                for line in aio_body_lines
-            )
-            # Add @classmethod decorator to the async wrapper
-            # No type annotation needed on cls - it's inferred from context
-            aio_wrapper_method = (
-                f"    @classmethod\n"
-                f"    async def {aio_method_name}(cls, {param_str}){async_return_str}:\n"
-                f"{aio_body_indented}"
-            )
-            wrapper_functions_code = aio_wrapper_method
-        else:
-            # Sync-only classmethod: no async wrapper needed
-            wrapper_functions_code = ""
-            aio_body = None
-    elif method_type == "staticmethod":
-        if aio_body is not None:
-            # Async staticmethod: generate async method (no self/cls)
-            # aio_body is indented with 4 spaces, needs 8 spaces for method body
-            aio_body_lines = aio_body.split("\n")
-            # Remove 4 spaces from start (base indent) and add 8 spaces, preserving relative indentation
-            aio_body_indented = "\n".join(
-                (
-                    "        " + line[4:]
-                    if line.strip() and len(line) > 4 and line.startswith("    ")
-                    else "        " + line.lstrip()
-                    if line.strip()
-                    else ""
-                )
-                for line in aio_body_lines
-            )
-            # Add @staticmethod decorator to the async wrapper
-            aio_wrapper_method = (
-                f"    @staticmethod\n"
-                f"    async def {aio_method_name}({param_str}){async_return_str}:\n"
-                f"{aio_body_indented}"
-            )
-            wrapper_functions_code = aio_wrapper_method
-        else:
-            # Sync-only staticmethod: no async wrapper needed
-            wrapper_functions_code = ""
-            aio_body = None
-    else:
-        # Fallback - should not happen
-        wrapper_functions_code = ""
-
-    # Build parameterized wrapper class/function name for decorator
-    decorator_typevars = []
-
-    # Add typing.Self for OWNER_TYPE if method uses Self
-    if uses_self_type:
-        decorator_typevars.append("typing.Self")
-
-    # Add parent class's type variables
-    if generic_typevars:
-        decorator_typevars.extend(list(generic_typevars.keys()))
-
-    decorator_func = method_plan.decorator_func
-
-    # Build the method body - contains sync wrapper logic
-    # For async methods, we'll pass the async wrapper to the decorator
-    # For sync-only methods, use plain Python decorators (no descriptor magic needed)
-
-    if aio_body is not None:
-        # Async method: use descriptor decorator with async wrapper method
-        # Reference the method directly (we're inside the class, so no need for class qualifier)
-        # For classmethods, stack @classmethod with @wrapped_classmethod
-        # For staticmethods, stack @staticmethod with @wrapped_staticmethod
-        if method_type == "classmethod":
-            decorator_line = f"@{decorator_func}({aio_method_name})\n    @classmethod"
-        elif method_type == "staticmethod":
-            decorator_line = f"@{decorator_func}({aio_method_name})\n    @staticmethod"
-        else:
-            decorator_line = f"@{decorator_func}({aio_method_name})"
-        # Method body contains sync wrapper logic
-        # For instance methods, need to adjust sync_method_body to work as method body
-        # sync_method_body is indented with 4 spaces, method body needs 8 spaces
-        if method_type == "instance":
-            # Remove wrapper_instance parameter from sync_method_body since it will be 'self'
-            method_body_lines = sync_method_body.replace("wrapper_instance", "self").split("\n")
-            method_body = "\n".join(
-                "        " + line.lstrip() if line.strip() else "" for line in method_body_lines
-            ).strip()
-        elif method_type == "classmethod":
-            # Remove wrapper_class parameter from sync_method_body since it will be 'cls'
-            method_body_lines = sync_method_body.replace("wrapper_class", "cls").split("\n")
-            method_body = "\n".join(
-                "        " + line.lstrip() if line.strip() else "" for line in method_body_lines
-            ).strip()
-        else:  # staticmethod
-            # No replacement needed for staticmethods, but need to add indentation
-            method_body_lines = sync_method_body.split("\n")
-            method_body = "\n".join(
-                "        " + line.lstrip() if line.strip() else "" for line in method_body_lines
-            ).strip()
-    else:
-        # Sync-only method: use plain Python decorators, no descriptor needed
-        # Method body contains sync wrapper logic directly
-        if method_type == "instance":
-            # Plain instance method - no decorator needed
-            decorator_line = ""
-            method_body_lines = sync_method_body.replace("wrapper_instance", "self").split("\n")
-            method_body = "\n".join(
-                "        " + line.lstrip() if line.strip() else "" for line in method_body_lines
-            ).strip()
-        elif method_type == "classmethod":
-            # Use plain @classmethod decorator
-            decorator_line = "@classmethod"
-            method_body_lines = sync_method_body.replace("wrapper_class", "cls").split("\n")
-            method_body = "\n".join(
-                "        " + line.lstrip() if line.strip() else "" for line in method_body_lines
-            ).strip()
-        else:  # staticmethod
-            # Use plain @staticmethod decorator
-            decorator_line = "@staticmethod"
-            method_body_lines = sync_method_body.split("\n")
-            method_body = "\n".join(
-                "        " + line.lstrip() if line.strip() else "" for line in method_body_lines
-            ).strip()
-
-    # Build the function definition line
-    if method_type in ("classmethod", "staticmethod"):
-        # For classmethods, use plain cls (not cls: type["Class"]) since @classmethod handles binding
-        if method_type == "classmethod":
-            def_line = f"    def {method_name}({method_plan.public_signature_param_str}){sync_return_str}:"
-        else:
-            def_line = f"    def {method_name}({method_plan.dummy_param_str}){sync_return_str}:"
-    else:
-        def_line = f"    def {method_name}({method_plan.public_signature_param_str}){sync_return_str}:"
-
-    # Build the method code - handle decorator line differently for sync-only vs async
-    if decorator_line:
-        # Has decorator (either descriptor or plain Python decorator)
-        sync_method_code = f"    {decorator_line}\n{def_line}\n        {method_body}"
-    else:
-        # No decorator (plain instance method)
-        sync_method_code = f"{def_line}\n        {method_body}"
+    wrapper_functions_code = _render_async_wrapper_method(
+        method_type,
+        aio_method_name,
+        param_str,
+        async_return_str,
+        aio_body,
+    )
+    sync_method_code = _render_sync_method(
+        method_name,
+        method_type,
+        method_plan,
+        sync_return_str,
+        sync_method_body,
+        aio_method_name,
+        aio_body,
+    )
 
     return wrapper_functions_code, sync_method_code
 
