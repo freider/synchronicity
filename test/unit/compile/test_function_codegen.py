@@ -425,7 +425,7 @@ class TestSyncFunctions:
 
         code = compile_function(documented, "test_module", "test_synchronizer", test_synchronizer)
 
-        assert '"""Add two values."""' in code
+        assert "    'Add two values.'" in code
 
     def test_compile_sync_function_with_wrapped_arg(self, test_synchronizer):
         """Test compiling a synchronous function that takes a wrapped type."""

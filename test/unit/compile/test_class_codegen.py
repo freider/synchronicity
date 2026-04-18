@@ -205,14 +205,24 @@ def test_compile_class_type_annotations_preserved(simple_class):
 def test_compile_class_method_docstrings_preserved(simple_class):
     """Test that generated methods include source docstrings."""
 
-    synchronized_types = {simple_class: ("test_module", "Counter")}
-    generated_code = compile_class(simple_class, "test_module", "test_synchronizer", synchronized_types)
+    class DocumentedClass:
+        async def get_value(self) -> int:
+            """Get value."""
+            return 1
 
-    assert "async def __increment_aio(self) -> int:" in generated_code
-    assert "        'Increment and return the new count.'" in generated_code
-    assert "def increment(self) -> int:" in generated_code
-    assert "async def __get_multiples_aio(self, n: int)" in generated_code
-    assert "        'Generate multiples of the count.'" in generated_code
+        async def set_value(self, new_value: int) -> None:
+            """Set value."""
+            return None
+
+    synchronized_types = {DocumentedClass: ("test_module", "DocumentedClass")}
+    generated_code = compile_class(DocumentedClass, "test_module", "test_synchronizer", synchronized_types)
+
+    assert "async def __get_value_aio(" in generated_code
+    assert "async def __set_value_aio(self, new_value: int) -> None:" in generated_code
+    assert "        'Get value.'" in generated_code
+    assert "        'Set value.'" in generated_code
+    assert "def get_value(self) -> int:" in generated_code
+    assert "def set_value(self, new_value: int) -> None:" in generated_code
 
 
 def test_compile_class_impl_instance_access(simple_class):
