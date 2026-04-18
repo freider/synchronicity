@@ -57,6 +57,18 @@ def test_method_wrapper_aio_execution(generated_wrappers):
     print(f"✓ Method wrapper .aio() execution: async generator returned {result}")
 
 
+def test_generated_method_docstrings(generated_wrappers):
+    """Test that generated method wrappers preserve source docstrings."""
+    import simple_class
+
+    counter = simple_class.Counter(1)
+
+    assert counter.increment.__doc__ == "Increment and return the new count."
+    assert counter.increment.aio.__doc__ == "Increment and return the new count."
+    assert counter.get_multiples.__doc__ == "Generate multiples of the count."
+    assert counter.get_multiples.aio.__doc__ == "Generate multiples of the count."
+
+
 def test_pyright_simple_class(generated_wrappers):
     """Test that simple class generation passes pyright."""
     import simple_class

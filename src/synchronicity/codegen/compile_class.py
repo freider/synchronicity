@@ -9,6 +9,7 @@ import typing
 from .compile_utils import (
     _build_call_with_wrap,
     _contains_self_type,
+    _format_docstring_literal,
     _format_return_annotation,
     _normalize_async_annotation,
     _parse_parameters_with_transformers,
@@ -81,6 +82,9 @@ def compile_method_wrapper(
         - wrapper_functions_code: Generated wrapper functions
         - sync_method_code: The dummy method with descriptor decorator
     """
+    method_docstring = inspect.getdoc(method)
+    method_docstring_code = _format_docstring_literal(method_docstring, "        ")
+
     # Resolve all type annotations (with fallback for TYPE_CHECKING imports)
     annotations = _safe_get_annotations(method, globals_dict)
 
@@ -455,7 +459,9 @@ def compile_method_wrapper(
                 for line in aio_body_lines
             )
             aio_wrapper_method = (
-                f"    async def {aio_method_name}(self, {param_str}){async_return_str}:\n{aio_body_indented}"
+                f"    async def {aio_method_name}(self, {param_str}){async_return_str}:\n"
+                f"{method_docstring_code + chr(10) if method_docstring_code else ''}"
+                f"{aio_body_indented}"
             )
             wrapper_functions_code = aio_wrapper_method
         else:
@@ -485,6 +491,7 @@ def compile_method_wrapper(
             aio_wrapper_method = (
                 f"    @classmethod\n"
                 f"    async def {aio_method_name}(cls, {param_str}){async_return_str}:\n"
+                f"{method_docstring_code + chr(10) if method_docstring_code else ''}"
                 f"{aio_body_indented}"
             )
             wrapper_functions_code = aio_wrapper_method
@@ -512,6 +519,7 @@ def compile_method_wrapper(
             aio_wrapper_method = (
                 f"    @staticmethod\n"
                 f"    async def {aio_method_name}({param_str}){async_return_str}:\n"
+                f"{method_docstring_code + chr(10) if method_docstring_code else ''}"
                 f"{aio_body_indented}"
             )
             wrapper_functions_code = aio_wrapper_method
@@ -642,10 +650,19 @@ def compile_method_wrapper(
     # Build the method code - handle decorator line differently for sync-only vs async
     if decorator_line:
         # Has decorator (either descriptor or plain Python decorator)
-        sync_method_code = f"    {decorator_line}\n{def_line}\n        {method_body}"
+        sync_method_code = (
+            f"    {decorator_line}\n"
+            f"{def_line}\n"
+            f"{method_docstring_code + chr(10) if method_docstring_code else ''}"
+            f"        {method_body}"
+        )
     else:
         # No decorator (plain instance method)
-        sync_method_code = f"{def_line}\n        {method_body}"
+        sync_method_code = (
+            f"{def_line}\n"
+            f"{method_docstring_code + chr(10) if method_docstring_code else ''}"
+            f"        {method_body}"
+        )
 
     return wrapper_functions_code, sync_method_code
 

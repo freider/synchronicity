@@ -68,6 +68,26 @@ def test_sync_staticmethod(generated_wrappers):
     assert result == "static_hello"
 
 
+def test_method_docstrings(generated_wrappers):
+    """Test that generated method wrappers preserve source docstrings."""
+    import classmethod_staticmethod
+
+    obj = classmethod_staticmethod.TestClass(42)
+
+    assert obj.instance_method.__doc__ == "Return the stored value."
+    assert obj.instance_method.aio.__doc__ == "Return the stored value."
+    assert (
+        classmethod_staticmethod.TestClass.async_classmethod.__doc__
+        == "Multiply the shared sentinel value asynchronously."
+    )
+    assert (
+        classmethod_staticmethod.TestClass.async_classmethod.aio.__doc__
+        == "Multiply the shared sentinel value asynchronously."
+    )
+    assert classmethod_staticmethod.TestClass.async_staticmethod.__doc__ == "Add two values asynchronously."
+    assert classmethod_staticmethod.TestClass.async_staticmethod.aio.__doc__ == "Add two values asynchronously."
+
+
 def test_pyright_classmethod_staticmethod(generated_wrappers):
     """Test that generated classmethod and staticmethod code passes pyright."""
     import classmethod_staticmethod

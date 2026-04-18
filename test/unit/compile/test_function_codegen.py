@@ -97,6 +97,22 @@ class TestAsyncFunctions:
         assert "x: int" in generated_code
         assert "-> str" in generated_code
 
+    def test_compile_function_transfers_docstring(self, test_synchronizer):
+        """Generated wrappers should include the source function docstring."""
+
+        async def documented(value: int) -> int:
+            """Doc line one.
+
+            Doc line two.
+            """
+            return value
+
+        generated_code = compile_function(documented, "test_module", "test_synchronizer", test_synchronizer)
+
+        assert "Doc line one." in generated_code
+        assert "Doc line two." in generated_code
+        assert generated_code.count("Doc line one.") == 2
+
     def test_compile_function_complex_types(self, test_synchronizer, complex_function):
         """Test compile_function with complex type annotations"""
         # Generate code directly (no wrapping needed)
@@ -399,6 +415,17 @@ class TestSyncFunctions:
         assert "class _simple_add" not in code
         assert "@wrapped_function" not in code
         assert "async def aio" not in code
+
+    def test_compile_sync_function_transfers_docstring(self, test_synchronizer):
+        """Generated sync-only wrappers should keep the source docstring."""
+
+        def documented(a: int, b: int) -> int:
+            """Add two values."""
+            return a + b
+
+        code = compile_function(documented, "test_module", "test_synchronizer", test_synchronizer)
+
+        assert '"""Add two values."""' in code
 
     def test_compile_sync_function_with_wrapped_arg(self, test_synchronizer):
         """Test compiling a synchronous function that takes a wrapped type."""

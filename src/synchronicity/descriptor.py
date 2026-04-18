@@ -1,3 +1,4 @@
+import functools
 import typing
 from typing import Any, Callable, Concatenate, ParamSpec, TypeVar, overload
 
@@ -6,6 +7,19 @@ P = ParamSpec("P")
 R = TypeVar("R")
 AIO_P = ParamSpec("AIO_P")
 AIO_R = TypeVar("AIO_R")
+
+
+class _CallableProxy(typing.Generic[P, R]):
+    """Callable wrapper that preserves wrapped function metadata."""
+
+    wrapped: Callable[P, R]
+
+    def __init__(self, wrapped: Callable[P, R]):
+        self.wrapped = wrapped
+        functools.update_wrapper(self, wrapped)
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
+        return self.wrapped(*args, **kwargs)
 
 
 class FunctionWithAio(typing.Generic[P, R, AIO_P, AIO_R]):
@@ -18,6 +32,7 @@ class FunctionWithAio(typing.Generic[P, R, AIO_P, AIO_R]):
 
     sync_wrapper: Callable[P, R]
     aio_wrapper: Callable[AIO_P, AIO_R]
+    aio: _CallableProxy[AIO_P, AIO_R]
 
     def __init__(
         self,
@@ -26,13 +41,11 @@ class FunctionWithAio(typing.Generic[P, R, AIO_P, AIO_R]):
     ):
         self.sync_wrapper = sync_wrapper
         self.aio_wrapper = aio_wrapper
+        functools.update_wrapper(self, sync_wrapper)
+        self.aio = _CallableProxy(aio_wrapper)
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         return self.sync_wrapper(*args, **kwargs)
-
-    def aio(self, *args: AIO_P.args, **kwargs: AIO_P.kwargs) -> AIO_R:
-        return self.aio_wrapper(*args, **kwargs)
-
 
 class WrappedMethodDescriptor(typing.Generic[P, R, AIO_P, AIO_R]):
     """Descriptor that provides both sync and async method variants via .aio() for instance methods"""
@@ -48,6 +61,7 @@ class WrappedMethodDescriptor(typing.Generic[P, R, AIO_P, AIO_R]):
     ):
         self.sync_wrapper = sync_wrapper
         self.aio_wrapper = aio_wrapper
+        self.__doc__ = getattr(sync_wrapper, "__doc__", None)
 
     @overload
     def __get__(self, wrapper_instance: None, owner: type) -> typing.Self: ...
@@ -81,6 +95,7 @@ class WrappedStaticMethodDescriptor(typing.Generic[P, R, AIO_P, AIO_R]):
         self.sync_wrapper = sync_wrapper
         assert isinstance(aio_wrapper, staticmethod)
         self.aio_wrapper = aio_wrapper
+        self.__doc__ = getattr(sync_wrapper.__func__, "__doc__", None)
 
     def __get__(self, wrapper_instance: typing.Any | None, owner: type) -> FunctionWithAio[P, R, AIO_P, AIO_R]:
         return FunctionWithAio(
@@ -104,6 +119,7 @@ class WrappedClassMethodDescriptor(typing.Generic[P, R, AIO_P, AIO_R]):
         self.sync_wrapper = sync_wrapper
         assert isinstance(aio_wrapper, classmethod)
         self.aio_wrapper = aio_wrapper
+        self.__doc__ = getattr(sync_wrapper.__func__, "__doc__", None)
 
     def __get__(self, wrapper_instance: typing.Any | None, owner: type) -> FunctionWithAio[P, R, AIO_P, AIO_R]:
         return FunctionWithAio(

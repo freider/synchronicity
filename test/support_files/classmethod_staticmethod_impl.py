@@ -13,11 +13,13 @@ class TestClass:
         self.value = value
 
     async def instance_method(self) -> int:
+        """Return the stored value."""
         await asyncio.sleep(0.01)
         return self.value
 
     @classmethod
     async def async_classmethod(cls, multiplier: int) -> int:
+        """Multiply the shared sentinel value asynchronously."""
         await asyncio.sleep(0.01)
         return 42 * multiplier
 
@@ -27,6 +29,7 @@ class TestClass:
 
     @staticmethod
     async def async_staticmethod(x: int, y: int) -> int:
+        """Add two values asynchronously."""
         await asyncio.sleep(0.01)
         return x + y
 

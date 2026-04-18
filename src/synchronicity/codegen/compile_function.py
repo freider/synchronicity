@@ -8,6 +8,7 @@ import typing
 
 from .compile_utils import (
     _build_call_with_wrap,
+    _format_docstring_literal,
     _format_return_annotation,
     _normalize_async_annotation,
     _parse_parameters_with_transformers,
@@ -47,6 +48,7 @@ def compile_function(
 
     # Resolve all type annotations (with fallback for TYPE_CHECKING imports)
     annotations = _safe_get_annotations(f, globals_dict)
+    docstring_literal = _format_docstring_literal(f.__doc__, "    ")
 
     # Get function signature
     sig = inspect.signature(f)
@@ -137,7 +139,12 @@ def compile_function(
             function_body = f"{impl_ref}\n{function_body}"
 
         # Generate simple function (no decorator, no wrapper class) with helpers if needed
-        function_code = f"""def {f.__name__}({param_str}){sync_return_str}:
+        if docstring_literal:
+            function_code = f"""def {f.__name__}({param_str}){sync_return_str}:
+{docstring_literal}
+{function_body}"""
+        else:
+            function_code = f"""def {f.__name__}({param_str}){sync_return_str}:
 {function_body}"""
 
         if helpers_code:
@@ -229,7 +236,14 @@ def compile_function(
         )
 
     # Generate async wrapper function
-    async_wrapper_code = f"""async def {aio_function_name}({param_str}){async_return_str}:
+    if docstring_literal:
+        async_wrapper_code = f"""async def {aio_function_name}({param_str}){async_return_str}:
+{docstring_literal}
+{aio_unwrap_section}
+{aio_body}
+"""
+    else:
+        async_wrapper_code = f"""async def {aio_function_name}({param_str}){async_return_str}:
 {aio_unwrap_section}
 {aio_body}
 """
@@ -263,7 +277,15 @@ def compile_function(
         )
 
     # Generate sync function with @wrapped_function decorator
-    sync_function_code = f"""@wrapped_function({aio_function_name})
+    if docstring_literal:
+        sync_function_code = f"""@wrapped_function({aio_function_name})
+def {f.__name__}({param_str}){sync_return_str}:
+{docstring_literal}
+{sync_unwrap_section}
+{sync_function_body}
+"""
+    else:
+        sync_function_code = f"""@wrapped_function({aio_function_name})
 def {f.__name__}({param_str}){sync_return_str}:
 {sync_unwrap_section}
 {sync_function_body}

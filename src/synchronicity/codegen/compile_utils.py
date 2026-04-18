@@ -93,6 +93,15 @@ def _safe_get_annotations(obj, globals_dict=None):
             return raw_annotations
 
 
+def _format_docstring_literal(docstring: str | None, indent: str) -> str:
+    """Render a docstring literal for generated code."""
+    if docstring is None:
+        return ""
+
+    cleaned_docstring = inspect.cleandoc(docstring)
+    return f"{indent}{cleaned_docstring!r}" if cleaned_docstring else ""
+
+
 def _contains_self_type(annotation) -> bool:
     """Check if a type annotation contains typing.Self.
 

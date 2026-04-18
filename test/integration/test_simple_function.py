@@ -30,6 +30,15 @@ def test_return_awaitable(generated_wrappers):
     assert simple_function.returns_awaitable() == "hello"
 
 
+def test_function_docstrings(generated_wrappers):
+    import simple_function
+
+    assert simple_function.simple_add.__doc__ == "Add two numbers asynchronously."
+    assert simple_function.simple_add.aio.__doc__ == "Add two numbers asynchronously."
+    assert simple_function.simple_generator.__doc__ == "Simple async generator."
+    assert simple_function.simple_generator.aio.__doc__ == "Simple async generator."
+
+
 def test_pyright_simple_function(generated_wrappers):
     """Test that simple function generation passes pyright."""
     import simple_function

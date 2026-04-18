@@ -202,6 +202,19 @@ def test_compile_class_type_annotations_preserved(simple_class):
     assert "-> None" in generated_code
 
 
+def test_compile_class_method_docstrings_preserved(simple_class):
+    """Test that generated methods include source docstrings."""
+
+    synchronized_types = {simple_class: ("test_module", "Counter")}
+    generated_code = compile_class(simple_class, "test_module", "test_synchronizer", synchronized_types)
+
+    assert "async def __increment_aio(self) -> int:" in generated_code
+    assert "        'Increment and return the new count.'" in generated_code
+    assert "def increment(self) -> int:" in generated_code
+    assert "async def __get_multiples_aio(self, n: int)" in generated_code
+    assert "        'Generate multiples of the count.'" in generated_code
+
+
 def test_compile_class_impl_instance_access(simple_class):
     """Test that the generated class provides access to the original instance"""
 
