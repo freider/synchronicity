@@ -9,19 +9,6 @@ AIO_P = ParamSpec("AIO_P")
 AIO_R = TypeVar("AIO_R")
 
 
-class _CallableProxy(typing.Generic[P, R]):
-    """Callable wrapper that preserves wrapped function metadata."""
-
-    wrapped: Callable[P, R]
-
-    def __init__(self, wrapped: Callable[P, R]):
-        self.wrapped = wrapped
-        functools.update_wrapper(self, wrapped)
-
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
-        return self.wrapped(*args, **kwargs)
-
-
 class FunctionWithAio(typing.Generic[P, R, AIO_P, AIO_R]):
     """Function wrapper that provides both sync and async function variants via .aio(
 
@@ -32,7 +19,7 @@ class FunctionWithAio(typing.Generic[P, R, AIO_P, AIO_R]):
 
     sync_wrapper: Callable[P, R]
     aio_wrapper: Callable[AIO_P, AIO_R]
-    aio: _CallableProxy[AIO_P, AIO_R]
+    aio: Callable[AIO_P, AIO_R]
 
     def __init__(
         self,
@@ -42,7 +29,7 @@ class FunctionWithAio(typing.Generic[P, R, AIO_P, AIO_R]):
         self.sync_wrapper = sync_wrapper
         self.aio_wrapper = aio_wrapper
         functools.update_wrapper(self, sync_wrapper)
-        self.aio = _CallableProxy(aio_wrapper)
+        self.aio = aio_wrapper
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         return self.sync_wrapper(*args, **kwargs)
